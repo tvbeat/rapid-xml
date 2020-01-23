@@ -23,7 +23,7 @@ pub struct ElementEnter<N> {
     entered: bool,
 }
 
-impl<N: NextStep> ElementEnter<N> {
+impl<N: XmlPath> ElementEnter<N> {
     /// Create `ElementEnter` matching given tag
     pub fn tag(tag: &'static str, next: N) -> Self {
         Self { tag, next, entered: false }
@@ -111,13 +111,13 @@ mod private {
 }
 
 #[doc(hidden)]
-pub trait NextStep: private::Sealed {
+pub trait XmlPath: private::Sealed {
     type Output;
 
     fn go<R: Read>(&mut self, parser: &mut Parser<R>) -> Option<Self::Output>;
 }
 
-impl<N: NextStep> NextStep for ElementEnter<N> {
+impl<N: XmlPath> XmlPath for ElementEnter<N> {
     type Output = N::Output;
 
     fn go<R: Read>(&mut self, parser: &mut Parser<R>) -> Option<Self::Output> {
@@ -147,7 +147,7 @@ impl<N: NextStep> NextStep for ElementEnter<N> {
     }
 }
 
-impl<T: DeserializeOwned + Clone, N: NextStep> NextStep for ElementEnterDeserialize<T, N>
+impl<T: DeserializeOwned + Clone, N: XmlPath> XmlPath for ElementEnterDeserialize<T, N>
     where N::Output: Prepend<T>
 {
     type Output = <N::Output as Prepend<T>>::Output;
@@ -187,7 +187,7 @@ impl<T: DeserializeOwned + Clone, N: NextStep> NextStep for ElementEnterDeserial
     }
 }
 
-impl<T: DeserializeOwned> NextStep for ElementDeserialize<T> {
+impl<T: DeserializeOwned> XmlPath for ElementDeserialize<T> {
     type Output = (T,);
 
     fn go<R: Read>(&mut self, parser: &mut Parser<R>) -> Option<Self::Output> {
@@ -221,7 +221,7 @@ pub struct TreeDeserializer<R: Read, N> {
     path: N,
 }
 
-impl<R: Read, N: NextStep> TreeDeserializer<R, N> {
+impl<R: Read, N: XmlPath> TreeDeserializer<R, N> {
     /// Create new `TreeDeserializer` from given `Parser`.
     pub fn new(path: N, parser: Parser<R>) -> Self {
         Self {
@@ -236,7 +236,7 @@ impl<R: Read, N: NextStep> TreeDeserializer<R, N> {
     }
 }
 
-impl<R: Read, N: NextStep> Iterator for TreeDeserializer<R, N> {
+impl<R: Read, N: XmlPath> Iterator for TreeDeserializer<R, N> {
     type Item = N::Output; // TODO: Maybe flatten here?
 
     fn next(&mut self) -> Option<Self::Item> {
