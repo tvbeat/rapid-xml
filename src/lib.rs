@@ -16,7 +16,14 @@ extern crate test;
 
 pub use de::{DeserializeError, Deserializer};
 pub use parser::{DeferredString, Event, MalformedXMLKind, ParseError, Parser};
-pub use tree::{ElementDeserialize, ElementEnter, ElementEnterDeserialize, TreeDeserializer, XmlPath};
+pub use tree::{
+    ElementDeserialize,
+    ElementEnter,
+    ElementEnterDeserialize,
+    TreeDeserializer,
+    TreeDeserializerOutput,
+    XmlPath
+};
 
 mod de;
 mod tree;

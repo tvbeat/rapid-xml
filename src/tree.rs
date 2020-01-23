@@ -152,7 +152,7 @@ mod private {
 
 #[doc(hidden)]
 pub trait XmlPath: private::Sealed {
-    type Output;
+    type Output: DeTuple;
 
     fn go<R: Read>(&mut self, parser: &mut Parser<R>) -> Option<Result<Self::Output, DeserializeError>>;
 }
@@ -188,7 +188,7 @@ impl<N: XmlPath> XmlPath for ElementEnter<N> {
 }
 
 impl<T: DeserializeOwned + Clone, N: XmlPath> XmlPath for ElementEnterDeserialize<T, N>
-    where N::Output: Prepend<T>
+    where N::Output: Prepend<T>, <N::Output as Prepend<T>>::Output: DeTuple
 {
     type Output = <N::Output as Prepend<T>>::Output;
 
@@ -271,6 +271,9 @@ pub struct TreeDeserializer<R: Read, N> {
     parser: Parser<R>,
     path: N,
 }
+
+/// Type alias that helps to get the output type of TreeDeserializer
+pub type TreeDeserializerOutput<N> = <<N as XmlPath>::Output as DeTuple>::Output;
 
 impl<R: Read, N: XmlPath> TreeDeserializer<R, N> {
     /// Create new `TreeDeserializer` from given `Parser`.
