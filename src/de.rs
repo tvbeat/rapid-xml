@@ -236,7 +236,10 @@ impl<'de: 'a, 'a, R: Read> serde::Deserializer<'de> for &'a mut Deserializer<'a,
     }
 
     fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_some(self) // Eh?
+        // We don't really have a "null" value. The only `Option`s that will work are for map keys that are
+        // not present. If someone is trying to deserialize `Option` in other place, then we will always give
+        // `Some` and try to deserialize the content.
+        visitor.visit_some(self)
     }
 
     fn deserialize_unit<V: Visitor<'de>>(self, _visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
@@ -484,7 +487,14 @@ impl<'de: 'a, 'a> serde::Deserializer<'de> for ParseDeserializer<'a> {
         self.deserialize_bytes(visitor) // TODO: Correct?
     }
 
-    forward_to_deserialize_any! { option unit unit_struct newtype_struct seq tuple tuple_struct map struct enum }
+    fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
+        // We don't really have a "null" value. The only `Option`s that will work are for map keys that are
+        // not present. If someone is trying to deserialize `Option` in other place, then we will always give
+        // `Some` and try to deserialize the content.
+        visitor.visit_some(self)
+    }
+
+    forward_to_deserialize_any! { unit unit_struct newtype_struct seq tuple tuple_struct map struct enum }
 
     fn deserialize_identifier<V: Visitor<'de>>(self, _visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
         unimplemented!()
@@ -506,24 +516,61 @@ mod tests {
 
     #[test]
     fn test_deserializer() {
-        #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+        #[derive(Clone, Debug, Deserialize, PartialEq)]
         struct MyStruct {
             a_string: String,
+            a_opt_string_none: Option<String>,
+            a_opt_string_some: Option<String>,
+
             t_string: String,
+            t_opt_string_none: Option<String>,
+            t_opt_string_some: Option<String>,
+
             a_u32: u32,
+            a_opt_u32_none: Option<u32>,
+            a_opt_u32_some: Option<u32>,
+
             t_u32: u32,
+            t_opt_u32_none: Option<u32>,
+            t_opt_u32_some: Option<u32>,
+
             a_i8: i8,
+            a_opt_i8_none: Option<i8>,
+            a_opt_i8_some: Option<i8>,
+
             t_i8: i8,
+            t_opt_i8_none: Option<i8>,
+            t_opt_i8_some: Option<i8>,
+
             a_bool: bool,
+            a_opt_bool_none: Option<bool>,
+            a_opt_bool_some: Option<bool>,
+
             t_bool: bool,
+            t_opt_bool_none: Option<bool>,
+            t_opt_bool_some: Option<bool>,
+
+            a_f32: f32,
+            a_opt_f32_none: Option<f32>,
+            a_opt_f32_some: Option<f32>,
+
+            t_f32: f32,
+            t_opt_f32_none: Option<f32>,
+            t_opt_f32_some: Option<f32>,
         }
 
         let xml = br#"
-            <my-struct a_string='bla' a_u32="123" a_i8='-1' a_bool="true">
-                <t_string>ble</t_string>
-                <t_u32>456</t_u32>
-                <t_i8>-2</t_i8>
+            <my-struct a_string='bla' a_opt_string_some='ble' a_u32="1" a_opt_u32_some="2" a_i8='-1' a_opt_i8_some='-2' a_bool="true" a_opt_bool_some="false" a_f32="1.1" a_opt_f32_some="2.2">
+                <t_string>bli</t_string>
+                <t_opt_string_some>blo</t_string_opt_some>
+                <t_u32>3</t_u32>
+                <t_opt_u32_some>4</t_u32_opt_some>
+                <t_i8>-3</t_i8>
+                <t_opt_i8_some>-4</t_i8_opt_some>
                 <t_bool>false</t_bool>
+                <t_opt_bool_some>true</t_bool_opt_some>
+                <t_f32>3.3</t_f32>
+                <t_opt_f32_some>4.4</t_f32_opt_some>
             </my-struct>"#;
         let mut parser = Parser::new(Cursor::new(&xml[..]));
         let mut deserializer = Deserializer::new(&mut parser).unwrap();
@@ -531,13 +578,35 @@ mod tests {
         let my_struct = MyStruct::deserialize(&mut deserializer).unwrap();
         assert_eq!(my_struct, MyStruct {
             a_string: "bla".to_string(),
-            t_string: "ble".to_string(),
-            a_u32: 123,
-            t_u32: 456,
+            a_opt_string_none: None,
+            a_opt_string_some: Some("ble".to_string()),
+            t_string: "bli".to_string(),
+            t_opt_string_none: None,
+            t_opt_string_some: Some("blo".to_string()),
+            a_u32: 1,
+            a_opt_u32_none: None,
+            a_opt_u32_some: Some(2),
+            t_u32: 3,
+            t_opt_u32_none: None,
+            t_opt_u32_some: Some(4),
             a_i8: -1,
-            t_i8: -2,
+            a_opt_i8_none: None,
+            a_opt_i8_some: Some(-2),
+            t_i8: -3,
+            t_opt_i8_none: None,
+            t_opt_i8_some: Some(-4),
             a_bool: true,
+            a_opt_bool_none: None,
+            a_opt_bool_some: Some(false),
             t_bool: false,
+            t_opt_bool_none: None,
+            t_opt_bool_some: Some(true),
+            a_f32: 1.1,
+            a_opt_f32_none: None,
+            a_opt_f32_some: Some(2.2),
+            t_f32: 3.3,
+            t_opt_f32_none: None,
+            t_opt_f32_some: Some(4.4),
         });
     }
 
