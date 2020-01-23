@@ -10,6 +10,38 @@ use std::convert::TryInto;
 
 // TODO: Remove all unwraps!
 
+/// Utility that turns single-element tuple into that element and keeps multi-element tuples as they are
+pub trait DeTuple {
+    type Output;
+    fn detuple(self) -> Self::Output;
+}
+
+impl<A> DeTuple for (A,) {
+    type Output = A;
+    fn detuple(self) -> Self::Output { self.0 }
+}
+
+macro_rules! detuple_impls {
+    ($i:ident, $j:ident) => {
+        detuple_impls!(impl $i, $j);
+    };
+
+    ($i:ident, $j:ident, $($r_i:ident),+) => {
+        detuple_impls!(impl $i, $j, $($r_i),+);
+        detuple_impls!($j, $($r_i),+);
+    };
+
+    (impl $($i:ident),+) => {
+        impl<$($i),+> DeTuple for ($($i),+) {
+            type Output = ($($i),+);
+            fn detuple(self) -> Self::Output { self }
+        }
+    };
+}
+
+detuple_impls!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P);
+
+
 /// Part of path for `TreeDeserializer`.
 ///
 /// Enters matched element in a tree, nothing is deserialized.
@@ -215,6 +247,12 @@ impl<T: DeserializeOwned> XmlPath for ElementDeserialize<T> {
 
 /// Deserializer for a sequence of elements in a tree.
 ///
+/// See `xml_path` macro for easy way of constructing the path.
+///
+/// TreeDeserializer is an `Iterator` over the deserialized elements. If the xml path deserializes
+/// exactly one type, the iterator will yield that type. If the xml path deserializes multiple
+/// types (nested in a XML tree), the iterator will yield tuple of those types.
+///
 /// TODO: Example
 pub struct TreeDeserializer<R: Read, N> {
     parser: Parser<R>,
@@ -236,11 +274,11 @@ impl<R: Read, N: XmlPath> TreeDeserializer<R, N> {
     }
 }
 
-impl<R: Read, N: XmlPath> Iterator for TreeDeserializer<R, N> {
-    type Item = N::Output; // TODO: Maybe flatten here?
+impl<R: Read, N: XmlPath> Iterator for TreeDeserializer<R, N> where N::Output: DeTuple {
+    type Item = <N::Output as DeTuple>::Output;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.path.go(&mut self.parser)
+        self.path.go(&mut self.parser).map(DeTuple::detuple)
     }
 }
 
@@ -318,6 +356,26 @@ mod tests {
         m: u32,
     }
 
+    const SAMPLE_XML: &[u8] = br#"
+            <root>
+                <aaa>
+                    <bbb n="1">
+                        <ccc m="100"/>
+                        <ccc m="200"/>
+                    </bbb>
+                    <xxx>Unknown tag</xxx>
+                </aaa>
+                <xxx>Unknown tag</xxx>
+                <aaa>
+                    <bbb n="99">Matched tag without anything nested</bbb>
+                    <bbb n="2">
+                        <ccc><m>300</m></ccc>
+                        <ccc><m>400</m></ccc>
+                    </bbb>
+                </aaa>
+            </root>
+        "#;
+
     #[test]
     fn xml_path_macro() {
         let path = xml_path!("bbb" => Bbb);
@@ -338,34 +396,27 @@ mod tests {
 
     #[test]
     fn basic() {
-        let xml = br#"
-            <root>
-                <aaa>
-                    <bbb n="1">
-                        <ccc m="100"/>
-                        <ccc m="200"/>
-                    </bbb>
-                    <xxx>Unknown tag</xxx>
-                </aaa>
-                <xxx>Unknown tag</xxx>
-                <aaa>
-                    <bbb n="99">Matched tag without anything nested</bbb>
-                    <bbb n="2">
-                        <ccc><m>300</m></ccc>
-                        <ccc><m>400</m></ccc>
-                    </bbb>
-                </aaa>
-            </root>
-        "#;
+        let path = xml_path!("root", "aaa", "bbb", "ccc" => Ccc);
 
+        let mut des = TreeDeserializer::from_reader(path, Cursor::new(&SAMPLE_XML[..]));
+
+        assert_eq!(des.next(), Some(Ccc { m: 100 }));
+        assert_eq!(des.next(), Some(Ccc { m: 200 }));
+        assert_eq!(des.next(), Some(Ccc { m: 300 }));
+        assert_eq!(des.next(), Some(Ccc { m: 400 }));
+        assert_eq!(des.next(), None);
+    }
+
+    #[test]
+    fn multiple_elements() {
         let path = xml_path!("root", "aaa", "bbb" => Bbb, "ccc" => Ccc);
 
-        let mut hir_des = TreeDeserializer::from_reader(path, Cursor::new(&xml[..]));
+        let mut des = TreeDeserializer::from_reader(path, Cursor::new(&SAMPLE_XML[..]));
 
-        assert_eq!(hir_des.next(), Some((Bbb { n: 1 }, Ccc { m: 100 })));
-        assert_eq!(hir_des.next(), Some((Bbb { n: 1 }, Ccc { m: 200 })));
-        assert_eq!(hir_des.next(), Some((Bbb { n: 2 }, Ccc { m: 300 })));
-        assert_eq!(hir_des.next(), Some((Bbb { n: 2 }, Ccc { m: 400 })));
-        assert_eq!(hir_des.next(), None);
+        assert_eq!(des.next(), Some((Bbb { n: 1 }, Ccc { m: 100 })));
+        assert_eq!(des.next(), Some((Bbb { n: 1 }, Ccc { m: 200 })));
+        assert_eq!(des.next(), Some((Bbb { n: 2 }, Ccc { m: 300 })));
+        assert_eq!(des.next(), Some((Bbb { n: 2 }, Ccc { m: 400 })));
+        assert_eq!(des.next(), None);
     }
 }
