@@ -1,0 +1,22 @@
+[package]
+name = "rapid-xml"
+version = "0.1.0"
+authors = ["Michal Srb <michalsrb@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tuple_utils = "0.3.0"
+multiversion = "0.1.1"
+serde = "1.0.104"
+slice-deque = "0.3.0"
+inlinable_string = "0.1.10"
+
+[dev-dependencies]
+serde_derive = "1.0.104"
+
+[features]
+# Enable this feature to enable benchmarks using the (currently) unstable
+# test::Bencher.
+bencher = []
