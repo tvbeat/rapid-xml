@@ -362,7 +362,7 @@ pub enum MalformedXMLKind {
     ExtrasInClosingTag,
 
     /// The character '<' outside of beginning of a tag was not escaped (e.g. in string)
-    UnescapedGreaterThan,
+    UnescapedLessThan,
 
     /// EOF before the XML structure was properly terminated
     UnexpectedEof,
@@ -1076,7 +1076,7 @@ impl<R: Read> Parser<R> {
                             (c @ b'<', i) => return Err(Error::MalformedXML {
                                 byte: i,
                                 character: Some(c),
-                                kind: MalformedXMLKind::UnescapedGreaterThan,
+                                kind: MalformedXMLKind::UnescapedLessThan,
                             }),
 
                             _ => unreachable!("Some non-control characters sneaked in!")
