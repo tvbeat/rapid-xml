@@ -766,11 +766,15 @@ impl<R: Read> Parser<R> {
                             }
 
                             // If we encounter any other control characters, we must go deeper...
-                            (_, i) => {
+                            (c, i) => {
                                 let mut needs_eol_normalizing = false;
                                 let mut needs_decoding = false;
-                                let mut last_whitespace = i;
-                                let mut last_non_whitespace = i;
+                                let mut last_whitespace = self.last_index;
+                                let mut last_non_whitespace = self.last_index - 1;
+                                if let b'\t' | b'\n' | b'\r' | b' ' = c {
+                                    last_whitespace = i;
+                                    last_non_whitespace = i - 1;
+                                }
                                 loop {
                                     match self.next_control_char()? {
                                         // The presence of carriage return character means that we
@@ -1196,10 +1200,10 @@ mod tests {
     #[test]
     fn test_parser() {
         let xmls = [
-            "<aaa bbb=\"ccc\" ddd='eee'><ggg hhh='iii'/><jjj/><kkk>lll lll</kkk></aaa>",
-            "  <aaa  bbb = \"ccc\"  ddd = 'eee' > <ggg  hhh = 'iii' /> <jjj /> <kkk > lll lll </kkk > </aaa > ",
-            "<?xml bla ?><aaa bbb=\"ccc\" ddd='eee'><ggg hhh='iii'/><jjj/><kkk>lll lll</kkk></aaa>",
-            "<?xml bla ?>  <aaa   bbb  =  \"ccc\"   ddd  =  'eee'  >  <ggg   hhh  =  'iii'  />  <jjj  />  <kkk  >  lll lll  </kkk  >  </aaa  >  ",
+            "<aaa bbb=\"ccc\" ddd='eee'><ggg hhh='iii'/><jjj/><kkk>lll lll</kkk><mmm>nnn</mmm></aaa>",
+            "  <aaa  bbb = \"ccc\"  ddd = 'eee' > <ggg  hhh = 'iii' /> <jjj /> <kkk > lll lll </kkk > <mmm > nnn </mmm > </aaa > ",
+            "<?xml bla ?><aaa bbb=\"ccc\" ddd='eee'><ggg hhh='iii'/><jjj/><kkk>lll lll</kkk><mmm>nnn</mmm></aaa>",
+            "<?xml bla ?>  <aaa   bbb  =  \"ccc\"   ddd  =  'eee'  >  <ggg   hhh  =  'iii'  />  <jjj  />  <kkk  >  lll lll  </kkk  >  <mmm  >  nnn  </mmm  >  </aaa  >  ",
         ];
 
         for xml in &xmls {
@@ -1220,6 +1224,10 @@ mod tests {
             assert_eq!(parser.next().unwrap(), Event::StartTagDone);
             assert_eq!(parser.next().unwrap(), Event::Text(DeferredString::new(b"lll lll")));
             assert_eq!(parser.next().unwrap(), Event::EndTag(DeferredString::new(b"kkk")));
+            assert_eq!(parser.next().unwrap(), Event::StartTag(DeferredString::new(b"mmm")));
+            assert_eq!(parser.next().unwrap(), Event::StartTagDone);
+            assert_eq!(parser.next().unwrap(), Event::Text(DeferredString::new(b"nnn")));
+            assert_eq!(parser.next().unwrap(), Event::EndTag(DeferredString::new(b"mmm")));
             assert_eq!(parser.next().unwrap(), Event::EndTag(DeferredString::new(b"aaa")));
             assert_eq!(parser.next().unwrap(), Event::Eof);
         }
