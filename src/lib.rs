@@ -14,9 +14,9 @@
 #[cfg(feature = "bencher")]
 extern crate test;
 
-pub use de::Deserializer;
-pub use parser::{DeferredString, Error, Event, MalformedXMLKind, Parser};
-pub use tree::{ElementDeserialize, ElementEnter, ElementEnterDeserialize, XmlPath, TreeDeserializer};
+pub use de::{DeserializeError, Deserializer};
+pub use parser::{DeferredString, Event, MalformedXMLKind, ParseError, Parser};
+pub use tree::{ElementDeserialize, ElementEnter, ElementEnterDeserialize, TreeDeserializer, XmlPath};
 
 mod de;
 mod tree;

@@ -1,14 +1,14 @@
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
 use std::borrow::Cow;
+use std::convert::TryInto;
+use std::fmt::Display;
 use std::io::Read;
 
+use inlinable_string::InlinableString;
 use slice_deque::SliceDeque;
 
 use multiversion::multiversion;
-use std::convert::TryInto;
-use inlinable_string::InlinableString;
-
 
 const READ_SIZE: usize = 4 * 4096; // TODO: Fine-tune.
 const BLOCK_SIZE: usize = 64; // Size of u64, 64 characters, 4 sse2 128i loads, 2 avx 256i loads.
@@ -368,9 +368,9 @@ pub enum MalformedXMLKind {
     UnexpectedEof,
 }
 
-/// Error while parsing or deserializing
+/// Error while parsing
 #[derive(Debug)]
-pub enum Error {
+pub enum ParseError {
     /// IO error reading from the underlying Read
     IO(std::io::Error),
 
@@ -380,7 +380,7 @@ pub enum Error {
     /// XML was not well formed
     MalformedXML {
         /// Byte index of the problem
-        byte: usize,
+        byte: Option<usize>,
 
         /// Offending character, if any
         character: Option<u8>,
@@ -388,55 +388,48 @@ pub enum Error {
         /// Kind of malformation
         kind: MalformedXMLKind,
     },
-
-    /// Error parsing integer
-    ParseInt(std::num::ParseIntError),
-
-    /// Error parsing floating point number
-    ParseFloat(std::num::ParseFloatError),
-
-    /// Error parsing bool
-    ParseBool(std::str::ParseBoolError),
-
-    /// Custom error from Serde
-    Custom(String),
 }
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        unimplemented!()
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        match self {
+            ParseError::IO(err) => Display::fmt(err, f),
+            ParseError::Utf8(err) => Display::fmt(err, f),
+            ParseError::MalformedXML { byte, character, kind } => {
+                let msg = match kind {
+                    MalformedXMLKind::BadTagName => "bad tag name",
+                    MalformedXMLKind::BadAttributeName => "bad attribute name",
+                    MalformedXMLKind::BadAttributeValue => "bad value name",
+                    MalformedXMLKind::ExtrasInClosingTag => "extra things in closing tag",
+                    MalformedXMLKind::UnescapedLessThan => "unescaped '<' character",
+                    MalformedXMLKind::UnexpectedEof => "unexpected EOF",
+                };
+
+                write!(f, "Malformed XML: {}", msg)?;
+                if let Some(byte) = byte {
+                    write!(f, ", byte {}", byte)?;
+                }
+                if let Some(character) = character {
+                    write!(f, ", character {:?}", character)?;
+                }
+
+                Ok(())
+            }
+        }
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for ParseError {}
 
-impl From<std::io::Error> for Error {
+impl From<std::io::Error> for ParseError {
     fn from(err: std::io::Error) -> Self {
-        Error::IO(err)
+        ParseError::IO(err)
     }
 }
 
-impl From<std::str::Utf8Error> for Error {
+impl From<std::str::Utf8Error> for ParseError {
     fn from(err: std::str::Utf8Error) -> Self {
-        Error::Utf8(err)
-    }
-}
-
-impl From<std::num::ParseIntError> for Error {
-    fn from(err: std::num::ParseIntError) -> Self {
-        Error::ParseInt(err)
-    }
-}
-
-impl From<std::num::ParseFloatError> for Error {
-    fn from(err: std::num::ParseFloatError) -> Self {
-        Error::ParseFloat(err)
-    }
-}
-
-impl From<std::str::ParseBoolError> for Error {
-    fn from(err: std::str::ParseBoolError) -> Self {
-        Error::ParseBool(err)
+        ParseError::Utf8(err)
     }
 }
 
@@ -482,14 +475,14 @@ impl<'a> DeferredString<'a> {
     /// Convert to string in Rust representation
     ///
     /// This may return error in case of invalid Utf-8 or some other problems.
-    pub fn to_str(&self) -> Result<Cow<str>, Error> {
+    pub fn to_str(&self) -> Result<Cow<str>, ParseError> {
         // TODO: Handle decoding and eol normalizing!
         Ok(std::str::from_utf8(self.bytes).map(Cow::Borrowed)?)
     }
 }
 
 impl<'a> TryInto<InlinableString> for DeferredString<'a> {
-    type Error = Error;
+    type Error = ParseError;
 
     fn try_into(self) -> Result<InlinableString, Self::Error> {
         match self.to_str()? {
@@ -720,7 +713,7 @@ impl<R: Read> Parser<R> {
     }
 
     /// Retrieve next `Event`
-    pub fn next(&mut self) -> Result<Event, Error> {
+    pub fn next(&mut self) -> Result<Event, ParseError> {
         let event = self.next_();
 
 //        match &event {
@@ -738,7 +731,7 @@ impl<R: Read> Parser<R> {
         event
     }
 
-    fn next_(&mut self) -> Result<Event, Error> {
+    fn next_(&mut self) -> Result<Event, ParseError> {
         // Nested state machines that turn sequence of control characters into events.
         loop {
             match self.state {
@@ -857,8 +850,8 @@ impl<R: Read> Parser<R> {
                                     break;
                                 }
                                 if c == b'\0' {
-                                    return Err(Error::MalformedXML {
-                                        byte: i,
+                                    return Err(ParseError::MalformedXML {
+                                        byte: Some(i),
                                         character: None,
                                         kind: MalformedXMLKind::UnexpectedEof,
                                     });
@@ -886,8 +879,8 @@ impl<R: Read> Parser<R> {
                                         return Ok(Event::EndTag(DeferredString::new(&self.buffer[from..*to])));
                                     }
 
-                                    (c, i) => return Err(Error::MalformedXML {
-                                        byte: i,
+                                    (c, i) => return Err(ParseError::MalformedXML {
+                                        byte: Some(i),
                                         character: Some(c),
                                         kind: MalformedXMLKind::ExtrasInClosingTag,
                                     }),
@@ -923,8 +916,8 @@ impl<R: Read> Parser<R> {
                                 }
 
                                 // Any other control character at this point is malformed XML!
-                                (c, i) => return Err(Error::MalformedXML {
-                                    byte: i,
+                                (c, i) => return Err(ParseError::MalformedXML {
+                                    byte: Some(i),
                                     character: Some(c),
                                     kind: MalformedXMLKind::BadTagName,
                                 })
@@ -978,8 +971,8 @@ impl<R: Read> Parser<R> {
                                     (c, i) => {
                                         self.last_index = i;
                                         self.state = State::InTag;
-                                        return Err(Error::MalformedXML {
-                                            byte: i,
+                                        return Err(ParseError::MalformedXML {
+                                            byte: Some(i),
                                             character: Some(c),
                                             kind: MalformedXMLKind::BadAttributeName,
                                         })
@@ -999,8 +992,8 @@ impl<R: Read> Parser<R> {
                         }
 
                         // EOF is not allowed in the middle of a tag.
-                        (b'\0', _) => return Err(Error::MalformedXML {
-                            byte: 0,
+                        (b'\0', _) => return Err(ParseError::MalformedXML {
+                            byte: None,
                             character: None,
                             kind: MalformedXMLKind::UnexpectedEof,
                         }),
@@ -1009,8 +1002,8 @@ impl<R: Read> Parser<R> {
                         (c, i) => {
                             self.last_index = i;
                             self.state = State::InTag;
-                            return Err(Error::MalformedXML {
-                                byte: i,
+                            return Err(ParseError::MalformedXML {
+                                byte: Some(i),
                                 character: Some(c),
                                 kind: MalformedXMLKind::BadAttributeName,
                             })
@@ -1035,8 +1028,8 @@ impl<R: Read> Parser<R> {
                                 break (i + 1, true);
                             }
 
-                            (b'\0', _) => return Err(Error::MalformedXML {
-                                byte: 0,
+                            (b'\0', _) => return Err(ParseError::MalformedXML {
+                                byte: None,
                                 character: None,
                                 kind: MalformedXMLKind::UnexpectedEof,
                             }),
@@ -1044,8 +1037,8 @@ impl<R: Read> Parser<R> {
                             (c, i) => {
                                 self.last_index = i;
                                 self.state = State::InTag;
-                                return Err(Error::MalformedXML {
-                                    byte: i,
+                                return Err(ParseError::MalformedXML {
+                                    byte: Some(i),
                                     character: Some(c),
                                     kind: MalformedXMLKind::BadAttributeValue,
                                 })
@@ -1079,14 +1072,14 @@ impl<R: Read> Parser<R> {
                                 break i;
                             }
 
-                            (b'\0', _) => return Err(Error::MalformedXML {
-                                byte: 0,
+                            (b'\0', _) => return Err(ParseError::MalformedXML {
+                                byte: None,
                                 character: None,
                                 kind: MalformedXMLKind::UnexpectedEof,
                             }),
 
-                            (c @ b'<', i) => return Err(Error::MalformedXML {
-                                byte: i,
+                            (c @ b'<', i) => return Err(ParseError::MalformedXML {
+                                byte: Some(i),
                                 character: Some(c),
                                 kind: MalformedXMLKind::UnescapedLessThan,
                             }),
@@ -1128,13 +1121,16 @@ impl<R: Read> Parser<R> {
     /// With depth = 1, it finishes the current tag.
     /// With depth = 2, it finishes the current tag and its parent.
     /// ...
-    pub fn finish_tag(&mut self, mut depth: usize) -> Result<(), Error> {
+    pub fn finish_tag(&mut self, mut depth: usize) -> Result<(), ParseError> {
         while depth > 0 {
             match self.next()? {
                 Event::StartTag(_) => depth += 1,
                 Event::EndTag(_) | Event::EndTagImmediate => depth -= 1,
                 Event::StartTagDone | Event::AttributeName(_) | Event::AttributeValue(_) | Event::Text(_) => { /*NOOP*/ },
-                Event::Eof => todo!("Unexpected EOF error!"),
+                Event::Eof => return Err(ParseError::MalformedXML {
+                    kind: MalformedXMLKind::UnexpectedEof,
+                    byte: None, character: None,
+                }),
             }
         }
 
