@@ -975,11 +975,15 @@ impl<R: Read> Parser<R> {
                                         // NOOP
                                     }
 
-                                    (c, i) => return Err(Error::MalformedXML {
-                                        byte: i,
-                                        character: Some(c),
-                                        kind: MalformedXMLKind::BadAttributeName,
-                                    })
+                                    (c, i) => {
+                                        self.last_index = i;
+                                        self.state = State::InTag;
+                                        return Err(Error::MalformedXML {
+                                            byte: i,
+                                            character: Some(c),
+                                            kind: MalformedXMLKind::BadAttributeName,
+                                        })
+                                    }
                                 }
                             }
 
@@ -1002,11 +1006,15 @@ impl<R: Read> Parser<R> {
                         }),
 
                         // Other control characters are not allowed in the middle of a tag.
-                        (c, i) => return Err(Error::MalformedXML {
-                            byte: i,
-                            character: Some(c),
-                            kind: MalformedXMLKind::BadAttributeName,
-                        })
+                        (c, i) => {
+                            self.last_index = i;
+                            self.state = State::InTag;
+                            return Err(Error::MalformedXML {
+                                byte: i,
+                                character: Some(c),
+                                kind: MalformedXMLKind::BadAttributeName,
+                            })
+                        }
                     }
                 }
 
@@ -1033,11 +1041,15 @@ impl<R: Read> Parser<R> {
                                 kind: MalformedXMLKind::UnexpectedEof,
                             }),
 
-                            (c, i) => return Err(Error::MalformedXML {
-                                byte: i,
-                                character: Some(c),
-                                kind: MalformedXMLKind::BadAttributeValue,
-                            })
+                            (c, i) => {
+                                self.last_index = i;
+                                self.state = State::InTag;
+                                return Err(Error::MalformedXML {
+                                    byte: i,
+                                    character: Some(c),
+                                    kind: MalformedXMLKind::BadAttributeValue,
+                                })
+                            }
                         }
                     };
 
