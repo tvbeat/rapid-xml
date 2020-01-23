@@ -1,17 +1,91 @@
 use std::borrow::Cow;
+use std::convert::TryInto;
+use std::fmt::Display;
 use std::io::Read;
 
-use serde::de::{DeserializeSeed, IntoDeserializer, Visitor};
-use serde::{forward_to_deserialize_any, Deserializer as _};
-
-use crate::{Error, Event, Parser};
-use crate::parser::DeferredString;
 use inlinable_string::InlinableString;
-use std::convert::TryInto;
+use serde::{Deserializer as _, forward_to_deserialize_any};
+use serde::de::{DeserializeSeed, IntoDeserializer, Visitor};
 
-impl serde::de::Error for Error {
+use crate::{Event, ParseError, Parser};
+use crate::parser::DeferredString;
+
+/// Error while parsing or deserializing
+#[derive(Debug)]
+pub enum DeserializeError {
+    /// Error from underlying parser
+    Parsing(ParseError),
+
+    /// Error parsing integer
+    ParseInt(std::num::ParseIntError),
+
+    /// Error parsing floating point number
+    ParseFloat(std::num::ParseFloatError),
+
+    /// Error parsing bool
+    ParseBool(std::str::ParseBoolError),
+
+    /// Error deserializing character - there was none or too many characters
+    NotOneCharacter,
+
+    /// EOF came too early.
+    UnexpectedEof,
+
+    /// Deserializer was expecting an element, but found something else
+    ExpectedElement,
+
+    /// Deserializer was expecting text, but found none
+    ExpectedText,
+
+    /// Custom error from Serde
+    Custom(String),
+}
+
+impl Display for DeserializeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        match self {
+            DeserializeError::Parsing(err) => Display::fmt(err, f),
+            DeserializeError::ParseInt(err) => Display::fmt(err, f),
+            DeserializeError::ParseFloat(err) => Display::fmt(err, f),
+            DeserializeError::ParseBool(err) => Display::fmt(err, f),
+            DeserializeError::NotOneCharacter => write!(f, "Expected character, but found string with more or less than 1 character."),
+            DeserializeError::UnexpectedEof => write!(f, "Unexpected EOF."),
+            DeserializeError::ExpectedElement => write!(f, "Expected element, but found something else."),
+            DeserializeError::ExpectedText => write!(f, "Expected text, but found none."),
+            DeserializeError::Custom(string) => write!(f, "{}", string),
+        }
+    }
+}
+
+impl std::error::Error for DeserializeError {}
+
+impl From<ParseError> for DeserializeError {
+    fn from(err: ParseError) -> Self {
+        DeserializeError::Parsing(err)
+    }
+}
+
+impl From<std::num::ParseIntError> for DeserializeError {
+    fn from(err: std::num::ParseIntError) -> Self {
+        DeserializeError::ParseInt(err)
+    }
+}
+
+impl From<std::num::ParseFloatError> for DeserializeError {
+    fn from(err: std::num::ParseFloatError) -> Self {
+        DeserializeError::ParseFloat(err)
+    }
+}
+
+impl From<std::str::ParseBoolError> for DeserializeError {
+    fn from(err: std::str::ParseBoolError) -> Self {
+        DeserializeError::ParseBool(err)
+    }
+}
+
+impl serde::de::Error for DeserializeError {
     fn custom<T: std::fmt::Display>(msg: T) -> Self {
-        Error::Custom(msg.to_string())
+        DeserializeError::Custom(msg.to_string())
     }
 }
 
@@ -24,21 +98,25 @@ pub struct Deserializer<'a, R: Read> {
 
 impl<'a, R: Read> Deserializer<'a, R> {
     /// Create new `TreeDeserializer` from given `Parser`.
-    pub fn new(parser: &'a mut Parser<R>) -> Self {
+    pub fn new(parser: &'a mut Parser<R>) -> Result<Self, DeserializeError> {
         // Enter the root element
-        let event = parser.next().unwrap(); // TODO: No unwrap
+        loop {
+            let event = parser.next()?;
+            match event {
+                Event::StartTag(tag_name) => {
+                    let opening_tag = tag_name.try_into()?;
+                    return Ok(Self::new_inside_tag(parser, opening_tag, false));
+                }
 
-        match event {
-            Event::StartTag(tag_name) => {
-                let opening_tag = tag_name.try_into().unwrap();
-                Self::new_inside_tag(parser, opening_tag, false) // TODO: No unwrap
-            }
+                Event::Text(_) => {
+                    /* Text before the first tag, we ignore it... */
+                }
 
-            _ => {
-                todo!("Handle error!")
+                _ => {
+                    return Err(DeserializeError::ExpectedElement);
+                }
             }
         }
-
     }
 
     // TODO: Should we expose something like this to public?
@@ -51,7 +129,7 @@ impl<'a, R: Read> Deserializer<'a, R> {
     }
 
     /// Call given callback on the content of next `Text` event
-    fn with_next_text<'x: 'a, F: FnOnce(DeferredString) -> Result<O, Error>, O>(&'x mut self, f: F) -> Result<O, Error> {
+    fn with_next_text<'x: 'a, F: FnOnce(DeferredString) -> Result<O, DeserializeError>, O>(&'x mut self, f: F) -> Result<O, DeserializeError> {
         let mut depth = 1;
         while depth > 0 {
             let event = self.parser.next()?;
@@ -64,22 +142,19 @@ impl<'a, R: Read> Deserializer<'a, R> {
                     self.parser.finish_tag(depth)?;
                     return out;
                 }
-                Event::Eof => todo!("Unexpected EOF error!"),
+                Event::Eof => break,
             }
         }
 
-        todo!("Error: No text!");
+        return Err(DeserializeError::ExpectedText);
     }
 }
 
 impl<'de: 'a, 'a, R: Read> serde::Deserializer<'de> for &'a mut Deserializer<'a, R> {
-    type Error = Error;
+    type Error = DeserializeError;
 
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        //unimplemented!()
-
         // TODO: Correct option?
-        //self.deserialize_map(visitor)
         self.deserialize_string(visitor)
     }
 
@@ -129,12 +204,12 @@ impl<'de: 'a, 'a, R: Read> serde::Deserializer<'de> for &'a mut Deserializer<'a,
     }
 
     fn deserialize_char<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.with_next_text(|text| {
-            let text = text.to_str()?;
-            if text.len() == 1 {
-                visitor.visit_char(text.chars().next().unwrap())
+        self.with_next_text(|string| {
+            let string = string.to_str()?;
+            if string.len() == 1 {
+                visitor.visit_char(string.chars().next().unwrap()) // NOTE(unwrap): We know there is exactly one character.
             } else {
-                todo!("Error: More than one character!");
+                return Err(DeserializeError::NotOneCharacter);
             }
         })
     }
@@ -196,7 +271,7 @@ impl<'de: 'a, 'a, R: Read> serde::Deserializer<'de> for &'a mut Deserializer<'a,
         }
 
         impl<'a, 'de: 'a, R: Read> serde::de::MapAccess<'de> for MapAccess<'a, R> {
-            type Error = Error;
+            type Error = DeserializeError;
 
             fn next_key_seed<K: DeserializeSeed<'de>>(&mut self, seed: K) -> Result<Option<<K as DeserializeSeed<'de>>::Value>, Self::Error> {
                 loop {
@@ -215,7 +290,7 @@ impl<'de: 'a, 'a, R: Read> serde::Deserializer<'de> for &'a mut Deserializer<'a,
                                 continue;
                             }
                         }
-                        e => todo!("Do we need error here? {:?}", e),
+                        e => unreachable!("Parser should have never given us {:?} event in this place.", e),
                     }
                 }
             }
@@ -234,7 +309,7 @@ impl<'de: 'a, 'a, R: Read> serde::Deserializer<'de> for &'a mut Deserializer<'a,
                         seed.deserialize(ParseDeserializer {
                             string: value.to_str()?,
                         }),
-                    e => todo!("Do we need error here? {:?}", e),
+                    e => unreachable!("Parser should have never given us {:?} event in this place.", e),
                 }
             }
         }
@@ -259,7 +334,7 @@ impl<'de: 'a, 'a, R: Read> serde::Deserializer<'de> for &'a mut Deserializer<'a,
         }
 
         impl<'a, 'de: 'a, R: Read> serde::de::EnumAccess<'de> for EnumAccess<'a, R> {
-            type Error = Error;
+            type Error = DeserializeError;
             type Variant = Self;
 
             fn variant_seed<V: DeserializeSeed<'de>>(self, seed: V) -> Result<(<V as DeserializeSeed<'de>>::Value, Self::Variant), Self::Error> {
@@ -272,7 +347,7 @@ impl<'de: 'a, 'a, R: Read> serde::Deserializer<'de> for &'a mut Deserializer<'a,
         }
 
         impl<'a, 'de: 'a, R: Read> serde::de::VariantAccess<'de> for EnumAccess<'a, R> {
-            type Error = Error;
+            type Error = DeserializeError;
 
             fn unit_variant(self) -> Result<(), Self::Error> {
                 self.parser.finish_tag(1)?; // ?
@@ -331,7 +406,7 @@ struct ParseDeserializer<'a> {
 }
 
 impl<'de: 'a, 'a> serde::Deserializer<'de> for ParseDeserializer<'a> {
-    type Error = Error;
+    type Error = DeserializeError;
 
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
         match self.string {
@@ -387,9 +462,9 @@ impl<'de: 'a, 'a> serde::Deserializer<'de> for ParseDeserializer<'a> {
 
     fn deserialize_char<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
         if self.string.len() == 1 {
-            visitor.visit_char(self.string.chars().next().unwrap())
+            visitor.visit_char(self.string.chars().next().unwrap()) // NOTE(unwrap): We know there is exactly one character.
         } else {
-            todo!("Error!");
+            Err(DeserializeError::NotOneCharacter)
         }
     }
 
@@ -451,7 +526,7 @@ mod tests {
                 <t_bool>false</t_bool>
             </my-struct>"#;
         let mut parser = Parser::new(Cursor::new(&xml[..]));
-        let mut deserializer = Deserializer::new(&mut parser);
+        let mut deserializer = Deserializer::new(&mut parser).unwrap();
 
         let my_struct = MyStruct::deserialize(&mut deserializer).unwrap();
         assert_eq!(my_struct, MyStruct {
@@ -485,7 +560,7 @@ mod tests {
                 </variant-a>"#;
 
         let mut parser = Parser::new(Cursor::new(&xml_a[..]));
-        let mut deserializer = Deserializer::new(&mut parser);
+        let mut deserializer = Deserializer::new(&mut parser).unwrap();
         let my_enum = MyEnum::deserialize(&mut deserializer).unwrap();
         assert_eq!(my_enum, MyEnum::VariantA {
             t_string: "ble".to_string(),
@@ -497,7 +572,7 @@ mod tests {
                 </variant-b>"#;
 
         let mut parser = Parser::new(Cursor::new(&xml_b[..]));
-        let mut deserializer = Deserializer::new(&mut parser);
+        let mut deserializer = Deserializer::new(&mut parser).unwrap();
         let my_enum = MyEnum::deserialize(&mut deserializer).unwrap();
         assert_eq!(my_enum, MyEnum::VariantB {
             t_u32: 456,
@@ -527,7 +602,7 @@ mod tests {
 
         let xml = br#"<variant-a attr='aaa'><bla>bbb</bla></variant-a>"#;
         let mut parser = Parser::new(Cursor::new(&xml[..]));
-        let mut deserializer = Deserializer::new(&mut parser);
+        let mut deserializer = Deserializer::new(&mut parser).unwrap();
         let my_struct = MyStruct::deserialize(&mut deserializer).unwrap();
         assert_eq!(my_struct, MyStruct {
             attr: "aaa".to_string(),
@@ -538,7 +613,7 @@ mod tests {
 
         let xml = br#"<variant-b attr='aaa'><ble>bbb</ble></variant-b>"#;
         let mut parser = Parser::new(Cursor::new(&xml[..]));
-        let mut deserializer = Deserializer::new(&mut parser);
+        let mut deserializer = Deserializer::new(&mut parser).unwrap();
         let my_struct = MyStruct::deserialize(&mut deserializer).unwrap();
         assert_eq!(my_struct, MyStruct {
             attr: "aaa".to_string(),

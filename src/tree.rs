@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use serde::de::DeserializeOwned;
 use tuple_utils::Prepend;
 
-use crate::{Error, Event, Parser};
+use crate::{DeserializeError, Event, Parser};
 use crate::de::Deserializer;
 
 /// Utility that turns single-element tuple into that element and keeps multi-element tuples as they are
@@ -154,13 +154,13 @@ mod private {
 pub trait XmlPath: private::Sealed {
     type Output;
 
-    fn go<R: Read>(&mut self, parser: &mut Parser<R>) -> Option<Result<Self::Output, Error>>;
+    fn go<R: Read>(&mut self, parser: &mut Parser<R>) -> Option<Result<Self::Output, DeserializeError>>;
 }
 
 impl<N: XmlPath> XmlPath for ElementEnter<N> {
     type Output = N::Output;
 
-    fn go<R: Read>(&mut self, parser: &mut Parser<R>) -> Option<Result<Self::Output, Error>> {
+    fn go<R: Read>(&mut self, parser: &mut Parser<R>) -> Option<Result<Self::Output, DeserializeError>> {
         loop {
             if self.entered {
                 if let Some(out) = self.next.go(parser) {
@@ -192,7 +192,7 @@ impl<T: DeserializeOwned + Clone, N: XmlPath> XmlPath for ElementEnterDeserializ
 {
     type Output = <N::Output as Prepend<T>>::Output;
 
-    fn go<R: Read>(&mut self, parser: &mut Parser<R>) -> Option<Result<Self::Output, Error>> {
+    fn go<R: Read>(&mut self, parser: &mut Parser<R>) -> Option<Result<Self::Output, DeserializeError>> {
         loop {
             if let Some(entered) = &self.entered {
                 if let Some(out) = self.next.go(parser) {
@@ -224,7 +224,7 @@ impl<T: DeserializeOwned + Clone, N: XmlPath> XmlPath for ElementEnterDeserializ
                     return None;
                 },
                 Event::Eof => {
-                    todo!("Error: Premature EOF");
+                    return Some(Err(DeserializeError::UnexpectedEof));
                 },
                 Event::StartTagDone | Event::AttributeName(_) | Event::AttributeValue(_) | Event::Text(_) => {}
             }
@@ -235,7 +235,7 @@ impl<T: DeserializeOwned + Clone, N: XmlPath> XmlPath for ElementEnterDeserializ
 impl<T: DeserializeOwned> XmlPath for ElementDeserialize<T> {
     type Output = (T,);
 
-    fn go<R: Read>(&mut self, parser: &mut Parser<R>) -> Option<Result<Self::Output, Error>> {
+    fn go<R: Read>(&mut self, parser: &mut Parser<R>) -> Option<Result<Self::Output, DeserializeError>> {
         loop {
             let event = try_some!(parser.next());
             match event {
@@ -250,7 +250,7 @@ impl<T: DeserializeOwned> XmlPath for ElementDeserialize<T> {
                     return None;
                 },
                 Event::Eof => {
-                    todo!("Error: Premature EOF");
+                    return Some(Err(DeserializeError::UnexpectedEof));
                 },
                 Event::StartTagDone | Event::AttributeName(_) | Event::AttributeValue(_) | Event::Text(_) => {}
             }
@@ -288,7 +288,7 @@ impl<R: Read, N: XmlPath> TreeDeserializer<R, N> {
 }
 
 impl<R: Read, N: XmlPath> Iterator for TreeDeserializer<R, N> where N::Output: DeTuple {
-    type Item = Result<<N::Output as DeTuple>::Output, Error>;
+    type Item = Result<<N::Output as DeTuple>::Output, DeserializeError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.path.go(&mut self.parser) {
