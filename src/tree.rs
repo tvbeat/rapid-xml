@@ -358,6 +358,42 @@ macro_rules! xml_path {
     };
 }
 
+/// Macro that expands to the type of XML path.
+///
+/// Useful if you need to name the type, e.g. if you want to store TreeDeserializer in a struct.
+///
+/// In other cases, `xml_path` macro is enough.
+#[macro_export]
+macro_rules! xml_path_type {
+    // Tail rule - turns `"ccc" => Ccc` expression into `ElementDeserialize`
+    ($tag_name:literal => $t:ty) => {
+        $crate::ElementDeserialize<$t>
+    };
+
+    // Tail rule - to inform user that the last expression must be `"ccc" => Ccc`, can't be just
+    // `"ccc"`.
+    ($tag_name:literal) => {
+        compile_error!("Paths must end with `\"tag_name\" => Type` expression.")
+    };
+
+    // Recursive rule - turn `"ccc" => Ccc` expression at beginning into `ElementEnterDeserialize`
+    // and call ourselves recursively on the rest.
+    ($tag_name:literal => $t:ty, $($r_tag_name:literal $(=> $r_t:ty)?),+) => {
+        $crate::ElementEnterDeserialize::<$t,
+            xml_path_type!($($r_tag_name $(=> $r_t)?),+)
+        >
+    };
+
+
+    // Recursive rule - turn `"ccc"` expression at beginning into `ElementEnter` and call ourselves
+    // recursively on the rest.
+    ($tag_name:literal, $($r_tag_name:literal $(=> $r_t:ty)?),+) => {
+        $crate::ElementEnter<
+            xml_path_type!($($r_tag_name $(=> $r_t)?),+)
+        >
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
@@ -434,6 +470,15 @@ mod tests {
 
         let path = xml_path!("bbb" => Bbb, "aaa", "ccc" => Ccc);
         assert_eq!(path, ElementEnterDeserialize::<Bbb, _>::tag("bbb", ElementEnter::tag("aaa", ElementDeserialize::<Ccc>::tag("ccc"))));
+    }
+
+    #[test]
+    fn xml_path_type_macro() {
+        let _: xml_path_type!("bbb" => Bbb) = xml_path!("bbb" => Bbb);
+        let _: xml_path_type!("bbb" => Bbb, "ccc" => Ccc) = xml_path!("bbb" => Bbb, "ccc" => Ccc);
+        let _: xml_path_type!("bbb", "ccc" => Ccc) = xml_path!("bbb", "ccc" => Ccc);
+        let _: xml_path_type!("aaa", "bbb" => Bbb, "ccc" => Ccc) = xml_path!("aaa", "bbb" => Bbb, "ccc" => Ccc);
+        let _: xml_path_type!("bbb" => Bbb, "aaa", "ccc" => Ccc) = xml_path!("bbb" => Bbb, "aaa", "ccc" => Ccc);
     }
 
     #[test]
