@@ -1,3 +1,5 @@
+//! Contains low-level XML `Parser`.
+
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
 use std::borrow::Cow;
@@ -864,7 +866,7 @@ impl<R: Read> Parser<R> {
                         }
 
                         // Is it a comment, CDATA or something else? Oops, we can't handle that yet.
-                        b'!' => todo!("Handle <! tags"),
+                        b'!' => unimplemented!("TODO: Handle <! tags"),
 
                         // Is it closing tag? Find the end of it and report it.
                         b'/' => {

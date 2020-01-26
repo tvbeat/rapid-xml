@@ -1,3 +1,5 @@
+//! Contains serde Deserializer build on top of `Parser` from `parse`.
+
 use std::borrow::Cow;
 use std::convert::TryInto;
 use std::fmt::Display;
@@ -7,8 +9,7 @@ use inlinable_string::InlinableString;
 use serde::{Deserializer as _, forward_to_deserialize_any};
 use serde::de::{DeserializeSeed, IntoDeserializer, Visitor};
 
-use crate::{Event, ParseError, Parser};
-use crate::parser::DeferredString;
+use crate::parser::{DeferredString, Event, ParseError, Parser};
 
 /// Error while parsing or deserializing
 #[derive(Debug)]
