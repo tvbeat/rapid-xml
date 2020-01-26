@@ -1,16 +1,25 @@
-use std::convert::TryInto;
+//! Contains XML tree serde Deserializer build on top of `Parser` from `parse` and `Deserializer`
+//! from `de`.
+
 use std::io::Read;
 use std::marker::PhantomData;
 
 use serde::de::DeserializeOwned;
 use tuple_utils::Prepend;
 
-use crate::{DeserializeError, Event, Parser};
-use crate::de::Deserializer;
+#[doc(hidden)]
+pub use paste::item as paste_item; // Re-exported so we can use it in our macro. Is there better way?
 
-/// Utility that turns single-element tuple into that element and keeps multi-element tuples as they are
+use crate::de::{DeserializeError, Deserializer};
+use crate::parser::{Event, Parser};
+
+/// Utility that turns single-element tuple into that element and keeps multi-element tuples as
+/// they are
 pub trait DeTuple {
+    /// The output type - a single element or >=2 element tuple
     type Output;
+
+    /// Perform the transformation
     fn detuple(self) -> Self::Output;
 }
 
@@ -50,35 +59,77 @@ macro_rules! try_some {
     }
 }
 
+/// Trait that determines whether given tag name matches some condition
+pub trait TagMatcher {
+    /// Does given `tag_name` match this matcher's condition?
+    fn matches(&self, tag_name: &str) -> bool;
+}
+
+/// Matches tags against needle provided as `'static str`
+#[derive(Debug, PartialEq)]
+pub struct ExactTagMatch {
+    needle: &'static str,
+}
+
+impl TagMatcher for ExactTagMatch {
+    #[inline(always)]
+    fn matches(&self, tag_name: &str) -> bool {
+        self.needle == tag_name
+    }
+}
+
+/// Matches all tags
+#[derive(Debug, Default, PartialEq)]
+pub struct AnyTagMatch {}
+
+impl TagMatcher for AnyTagMatch {
+    #[inline(always)]
+    fn matches(&self, _tag_name: &str) -> bool {
+        true
+    }
+}
+
 /// Part of path for `TreeDeserializer`.
 ///
 /// Enters matched element in a tree, nothing is deserialized.
 ///
 /// You may want to use the `xml_path!` macro rather than constructing path manually.
 #[derive(Debug)]
-pub struct ElementEnter<N> {
-    tag: &'static str,
+pub struct ElementEnter<M, N> {
+    tag_matcher: M,
     next: N,
 
     entered: bool,
 }
 
-impl<N: XmlPath> ElementEnter<N> {
-    /// Create `ElementEnter` matching given tag
-    pub fn tag(tag: &'static str, next: N) -> Self {
-        Self { tag, next, entered: false }
-    }
-
-    /// Create `ElementEnter` matching any tag
-    pub fn any(next: N) -> Self {
-        Self { tag: "*", next, entered: false }
+impl<M: Default, N: Default> Default for ElementEnter<M, N> {
+    fn default() -> Self {
+        Self {
+            tag_matcher: M::default(),
+            next: N::default(),
+            entered: false,
+        }
     }
 }
 
-impl<N: PartialEq<N>> PartialEq<ElementEnter<N>> for ElementEnter<N> {
-    fn eq(&self, other: &ElementEnter<N>) -> bool {
-        self.tag == other.tag && self.next == other.next
-        // State is ignored
+impl<M, N> ElementEnter<M, N> {
+    /// Create `ElementEnter` matching tag using given matcher
+    pub fn new(tag_matcher: M, next: N) -> Self {
+        Self { tag_matcher, next, entered: false }
+    }
+}
+
+impl<N> ElementEnter<ExactTagMatch, N> {
+    /// Create `ElementEnter` matching given tag
+    pub fn tag(tag: &'static str, next: N) -> Self {
+        Self::new(ExactTagMatch { needle: tag }, next)
+    }
+}
+
+impl<N> ElementEnter<AnyTagMatch, N> {
+    /// Create `ElementEnter` matching any tag
+    pub fn any(next: N) -> Self {
+        Self::new(AnyTagMatch {}, next)
     }
 }
 
@@ -90,29 +141,41 @@ impl<N: PartialEq<N>> PartialEq<ElementEnter<N>> for ElementEnter<N> {
 ///
 /// You may want to use the `xml_path!` macro rather than constructing path manually.
 #[derive(Debug)]
-pub struct ElementEnterDeserialize<T, N> {
-    tag: &'static str,
+pub struct ElementEnterDeserialize<T, M, N> {
+    tag_matcher: M,
     next: N,
 
     entered: Option<T>,
 }
 
-impl<T, N> ElementEnterDeserialize<T, N> {
-    /// Create `ElementEnterDeserialize` matching given tag
-    pub fn tag(tag: &'static str, next: N) -> Self {
-        Self { tag, next, entered: None }
-    }
-
-    /// Create `ElementEnterDeserialize` matching any tag
-    pub fn any(next: N) -> Self {
-        Self { tag: "*", next, entered: None }
+impl<T, M: Default, N: Default> Default for ElementEnterDeserialize<T, M, N> {
+    fn default() -> Self {
+        Self {
+            tag_matcher: M::default(),
+            next: N::default(),
+            entered: None,
+        }
     }
 }
 
-impl<T: DeserializeOwned, N: PartialEq<N>> PartialEq<ElementEnterDeserialize<T, N>> for ElementEnterDeserialize<T, N> {
-    fn eq(&self, other: &ElementEnterDeserialize<T, N>) -> bool {
-        self.tag == other.tag && self.next == other.next
-        // State is ignored
+impl<T, M, N> ElementEnterDeserialize<T, M, N> {
+    /// Create `ElementEnterDeserialize` matching tag using given matcher
+    pub fn new(tag_matcher: M, next: N) -> Self {
+        Self { tag_matcher, next, entered: None }
+    }
+}
+
+impl<T, N> ElementEnterDeserialize<T, ExactTagMatch, N> {
+    /// Create `ElementEnterDeserialize` matching given tag
+    pub fn tag(tag: &'static str, next: N) -> Self {
+        Self::new(ExactTagMatch { needle: tag }, next)
+    }
+}
+
+impl<T, N> ElementEnterDeserialize<T, AnyTagMatch, N> {
+    /// Create `ElementEnterDeserialize` matching any tag
+    pub fn any(next: N) -> Self {
+        Self::new(AnyTagMatch {}, next)
     }
 }
 
@@ -123,20 +186,38 @@ impl<T: DeserializeOwned, N: PartialEq<N>> PartialEq<ElementEnterDeserialize<T, 
 ///
 /// You may want to use the `xml_path!` macro rather than constructing path manually.
 #[derive(Debug, PartialEq)]
-pub struct ElementDeserialize<T: DeserializeOwned> {
-    tag: &'static str,
+pub struct ElementDeserialize<T: DeserializeOwned, M> {
+    tag_matcher: M,
     _phantom: PhantomData<T>,
 }
 
-impl<T: DeserializeOwned> ElementDeserialize<T> {
+impl<T: DeserializeOwned, M: Default> Default for ElementDeserialize<T, M> {
+    fn default() -> Self {
+        Self {
+            tag_matcher: M::default(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T: DeserializeOwned, M> ElementDeserialize<T, M> {
+    /// Create `ElementDeserialize` matching tag using given matcher
+    pub fn new(tag_matcher: M) -> Self {
+        Self { tag_matcher, _phantom: PhantomData }
+    }
+}
+
+impl<T: DeserializeOwned> ElementDeserialize<T, ExactTagMatch> {
     /// Create `ElementDeserialize` matching given tag
     pub fn tag(tag: &'static str) -> Self {
-        Self { tag, _phantom: PhantomData }
+        Self::new(ExactTagMatch { needle: tag })
     }
+}
 
+impl<T: DeserializeOwned> ElementDeserialize<T, AnyTagMatch> {
     /// Create `ElementDeserialize` matching any tag
     pub fn any() -> Self {
-        Self { tag: "*", _phantom: PhantomData }
+        Self::new(AnyTagMatch {})
     }
 }
 
@@ -145,9 +226,9 @@ mod private {
 
     pub trait Sealed {}
 
-    impl<N> Sealed for super::ElementEnter<N> {}
-    impl<T: DeserializeOwned, N> Sealed for super::ElementEnterDeserialize<T, N> {}
-    impl<T: DeserializeOwned> Sealed for super::ElementDeserialize<T> {}
+    impl<N, M> Sealed for super::ElementEnter<N, M> {}
+    impl<T: DeserializeOwned, N, M> Sealed for super::ElementEnterDeserialize<T, N, M> {}
+    impl<T: DeserializeOwned, M> Sealed for super::ElementDeserialize<T, M> {}
 }
 
 #[doc(hidden)]
@@ -157,7 +238,7 @@ pub trait XmlPath: private::Sealed {
     fn go<R: Read>(&mut self, parser: &mut Parser<R>) -> Option<Result<Self::Output, DeserializeError>>;
 }
 
-impl<N: XmlPath> XmlPath for ElementEnter<N> {
+impl<M: TagMatcher, N: XmlPath> XmlPath for ElementEnter<M, N> {
     type Output = N::Output;
 
     fn go<R: Read>(&mut self, parser: &mut Parser<R>) -> Option<Result<Self::Output, DeserializeError>> {
@@ -172,7 +253,8 @@ impl<N: XmlPath> XmlPath for ElementEnter<N> {
             let event = try_some!(parser.next());
             match event {
                 Event::StartTag(tag_name) => {
-                    if self.tag == "*" || self.tag == try_some!(tag_name.to_str()) {
+                    let tag_name = try_some!(tag_name.to_str());
+                    if self.tag_matcher.matches(tag_name.as_ref()) {
                         self.entered = true;
                     } else {
                         try_some!(parser.finish_tag(1));
@@ -187,7 +269,7 @@ impl<N: XmlPath> XmlPath for ElementEnter<N> {
     }
 }
 
-impl<T: DeserializeOwned + Clone, N: XmlPath> XmlPath for ElementEnterDeserialize<T, N>
+impl<T: DeserializeOwned + Clone, M: TagMatcher, N: XmlPath> XmlPath for ElementEnterDeserialize<T, M, N>
     where N::Output: Prepend<T>, <N::Output as Prepend<T>>::Output: DeTuple
 {
     type Output = <N::Output as Prepend<T>>::Output;
@@ -212,8 +294,9 @@ impl<T: DeserializeOwned + Clone, N: XmlPath> XmlPath for ElementEnterDeserializ
             let event = try_some!(parser.next());
             match event {
                 Event::StartTag(tag_name) => {
-                    if self.tag == "*" || self.tag == try_some!(tag_name.to_str()) {
-                        let opening_tag = try_some!(tag_name.try_into());
+                    let tag_name = try_some!(tag_name.to_str());
+                    if self.tag_matcher.matches(&tag_name) {
+                        let opening_tag = tag_name.as_ref().into();
                         let mut des = Deserializer::new_inside_tag(parser, opening_tag, true);
                         self.entered = Some(try_some!(T::deserialize(&mut des)));
                     } else {
@@ -232,7 +315,7 @@ impl<T: DeserializeOwned + Clone, N: XmlPath> XmlPath for ElementEnterDeserializ
     }
 }
 
-impl<T: DeserializeOwned> XmlPath for ElementDeserialize<T> {
+impl<T: DeserializeOwned, M: TagMatcher> XmlPath for ElementDeserialize<T, M> {
     type Output = (T,);
 
     fn go<R: Read>(&mut self, parser: &mut Parser<R>) -> Option<Result<Self::Output, DeserializeError>> {
@@ -240,8 +323,9 @@ impl<T: DeserializeOwned> XmlPath for ElementDeserialize<T> {
             let event = try_some!(parser.next());
             match event {
                 Event::StartTag(tag_name) => {
-                    if self.tag == "*" || self.tag == try_some!(tag_name.to_str()) {
-                        let opening_tag = try_some!(tag_name.try_into());
+                    let tag_name = try_some!(tag_name.to_str());
+                    if self.tag_matcher.matches(tag_name.as_ref()) {
+                        let opening_tag = tag_name.as_ref().into();
                         let mut des = Deserializer::new_inside_tag(parser, opening_tag, false);
                         return Some(Ok((try_some!(T::deserialize(&mut des)), )))
                     }
@@ -277,7 +361,7 @@ pub type TreeDeserializerOutput<N> = <<N as XmlPath>::Output as DeTuple>::Output
 
 impl<R: Read, N: XmlPath> TreeDeserializer<R, N> {
     /// Create new `TreeDeserializer` from given `Parser`.
-    pub fn new(path: N, parser: Parser<R>) -> Self {
+    pub fn from_path(path: N, parser: Parser<R>) -> Self {
         Self {
             parser,
             path,
@@ -285,8 +369,23 @@ impl<R: Read, N: XmlPath> TreeDeserializer<R, N> {
     }
 
     /// Create new `TreeDeserializer` from given IO `Read`.
-    pub fn from_reader(path: N, reader: R) -> Self {
-        Self::new(path, Parser::new(reader))
+    pub fn from_path_and_reader(path: N, reader: R) -> Self {
+        Self::from_path(path, Parser::new(reader))
+    }
+}
+
+impl<R: Read, N: XmlPath + Default> TreeDeserializer<R, N> {
+    /// Create new `TreeDeserializer` from given `Parser`.
+    pub fn new(parser: Parser<R>) -> Self {
+        Self {
+            parser,
+            path: N::default(),
+        }
+    }
+
+    /// Create new `TreeDeserializer` from given IO `Read`.
+    pub fn from_reader(reader: R) -> Self {
+        Self::new(Parser::new(reader))
     }
 }
 
@@ -307,7 +406,7 @@ impl<R: Read, N: XmlPath> Iterator for TreeDeserializer<R, N> where N::Output: D
 /// This macro is alternative to building path by manually creating and nesting `ElementEnter`,
 /// `ElementDeserialize` and `ElementEnterDeserialize`.
 ///
-/// You can use "*" to match any tag. Partial matching is currently not supported!
+/// You can use `*` (not `"*"`!) to match any tag. Partial matching is currently not supported!
 ///
 /// The last element must deserialize into a type!
 ///
@@ -320,77 +419,202 @@ impl<R: Read, N: XmlPath> Iterator for TreeDeserializer<R, N> where N::Output: D
 /// # #[derive(Deserialize)]
 /// # struct Eee {}
 /// # use rapid_xml::xml_path;
-/// let path = xml_path!("aaa", "*", "ccc" => Ccc, "*", "eee" => Eee);
+/// let path = xml_path!("aaa", *, "ccc" => Ccc, "ddd", * => Eee);
 /// ```
 ///
 /// This will enter tags `<aaa ...>`, inside enter any tag, inside enter and deserialize `<ccc ...>`
-/// tag into `Ccc` type, enter any tag and finaly deserialize `<eee ...` into `Eee` type.
+/// tag into `Ccc` type, enter `<ddd ...> tag tag and finaly deserialize any tag into `Eee` type.
 ///
 /// The `TreeDeserializer` with this path will be `Iterator` over `Result<(Ccc, Eee), _>` type.
 #[macro_export]
 macro_rules! xml_path {
-    // Tail rule - turns `"ccc" => Ccc` expression into `ElementDeserialize`
+    // Tail rule - turns `"ccc" => Ccc` or `* => Ccc` expression into `ElementDeserialize`
     ($tag_name:literal => $t:ty) => {
-        $crate::ElementDeserialize::<$t>::tag($tag_name)
+        $crate::tree::ElementDeserialize::<$t, _>::tag($tag_name)
+    };
+    (* => $t:ty) => {
+        $crate::tree::ElementDeserialize::<$t, _>::any()
     };
 
     // Tail rule - to inform user that the last expression must be `"ccc" => Ccc`, can't be just
     // `"ccc"`.
-    ($tag_name:literal) => {
-        compile_error!("Paths must end with `\"tag_name\" => Type` expression.")
-    };
+    ($tag_name:literal) => { $crate::xml_path!(*) };
+    (*) => { compile_error!("Paths must end with `\"tag_name\" => Type` expression.") };
 
-    // Recursive rule - turn `"ccc" => Ccc` expression at beginning into `ElementEnterDeserialize`
+    // Recursive rule - turn `"ccc" => Ccc` or `* => Ccc` expression at beginning into `ElementEnterDeserialize`
     // and call ourselves recursively on the rest.
-    ($tag_name:literal => $t:ty, $($r_tag_name:literal $(=> $r_t:ty)?),+) => {
-        $crate::ElementEnterDeserialize::<$t, _>::tag($tag_name,
-            xml_path!($($r_tag_name $(=> $r_t)?),+)
+    ($tag_name:literal => $t:ty, $($r_tag_name:tt $(=> $r_t:ty)?),+) => {
+        $crate::tree::ElementEnterDeserialize::<$t, _, _>::tag($tag_name,
+            $crate::xml_path!($($r_tag_name $(=> $r_t)?),+)
+        )
+    };
+    (* => $t:ty, $($r_tag_name:tt $(=> $r_t:ty)?),+) => {
+        $crate::tree::ElementEnterDeserialize::<$t, _, _>::any(
+            $crate::xml_path!($($r_tag_name $(=> $r_t)?),+)
         )
     };
 
-
-    // Recursive rule - turn `"ccc"` expression at beginning into `ElementEnter` and call ourselves
+    // Recursive rule - turn `"ccc"` or `*` expression at beginning into `ElementEnter` and call ourselves
     // recursively on the rest.
-    ($tag_name:literal, $($r_tag_name:literal $(=> $r_t:ty)?),+) => {
-        $crate::ElementEnter::tag($tag_name,
-            xml_path!($($r_tag_name $(=> $r_t)?),+)
+    ($tag_name:literal, $($r_tag_name:tt $(=> $r_t:ty)?),+) => {
+        $crate::tree::ElementEnter::tag($tag_name,
+            $crate::xml_path!($($r_tag_name $(=> $r_t)?),+)
+        )
+    };
+    (*, $($r_tag_name:tt $(=> $r_t:ty)?),+) => {
+        $crate::tree::ElementEnter::any(
+            $crate::xml_path!($($r_tag_name $(=> $r_t)?),+)
         )
     };
 }
 
-/// Macro that expands to the type of XML path.
+/// Macro that expands to `type ... = ...` alias of XML path.
 ///
-/// Useful if you need to name the type, e.g. if you want to store TreeDeserializer in a struct.
+/// The XML path if fully encoded in the type, including the names of the tags to be matched.
 ///
-/// In other cases, `xml_path` macro is enough.
+/// The resulting type is `Default`-constructible. This allows you to create the `TreeDeserializer`
+/// using the `new` and `from_reader` functions. This is useful if for example you need to store
+/// the deserializer in an associated type.
+///
+/// # Example
+///
+/// ```no_run
+/// # use serde_derive::Deserialize;
+/// # #[derive(Clone, Deserialize)]
+/// # struct Ccc {}
+/// # #[derive(Deserialize)]
+/// # struct Eee {}
+/// # use rapid_xml::xml_path_type;
+/// xml_path_type!(MyPath: "aaa", *, "ccc" => Ccc, "ddd", * => Eee);
+/// # fn main() {}
+/// ```
 #[macro_export]
 macro_rules! xml_path_type {
-    // Tail rule - turns `"ccc" => Ccc` expression into `ElementDeserialize`
-    ($tag_name:literal => $t:ty) => {
-        $crate::ElementDeserialize<$t>
+    // If we had const generics, implementing this would be quite easy - we would just have
+    // something like the `ExactTagMatch` that takes the string as const generic parameter and here
+    // we would just generate the type with it. But we don't have that in stable rust yet, so we use
+    // more complicated technique: For every string in the input we generate a struct implementing
+    // `TagMatcher` where the string ends up hardcoded inside the `matches` function. It is marked
+    // as `#[inline(always)]`, so the final result should be the same as it would be after
+    // monomorphization of the const generics struct.
+    //
+    // The generated structs are hidden inside a generated module to reduce chance of name
+    // collisions. We use the `paste` crate to create names for the module and the structs
+    // by concatenating the given type name with extra suffix.
+    // The module ends up named "<type_name>__rapid_xml_generated_matchers", the structs inside end
+    // up named "<Struct>Matcher<Suffix>", where `Struct` is the structure that the tag will be
+    // deserialized into (if any, otherwise empty) and `Suffix` is string containing multiple
+    // repeated 'A' characters. (Easiest form of a "counter".)
+
+    // This is the entry point - this is what the user should call.
+    // We create the basic structure - a module and type alias and call ourselves with @structs and
+    // @types prefix to generate the structs and the type respectively.
+    ($type_name:ident : $($r_tag_name:tt $(=> $r_t:ty)?),+) => {
+        $crate::tree::paste_item! {
+            #[allow(non_snake_case)]
+            #[doc(hidden)]
+            mod [<$type_name __rapid_xml_generated_matchers>] {
+                $crate::xml_path_type!(@structs A $($r_tag_name $(=> $r_t)?),+);
+            }
+        }
+
+        type $type_name = $crate::xml_path_type!(@types $type_name A $($r_tag_name $(=> $r_t)?),+);
+    };
+
+    // == @structs ==
+    // This part generates multiple structs implementing `TagMatcher` inside the module. One is
+    // generated for each tag matches by string (none for tags matched by wildcard). It goes thru
+    // the list recursively.
+
+    // Tail of the recursion for string match, we generate the struct and the impl of TagMatcher.
+    (@structs $suffix:ident $tag_name:literal $(=> $t:ty)?) => {
+        $crate::tree::paste_item! {
+            #[derive(Debug, Default, PartialEq)]
+            pub struct [<$($t)? Matcher $suffix>] {}
+
+            impl $crate::tree::TagMatcher for [<$($t)? Matcher $suffix>] {
+                #[inline(always)]
+                fn matches(&self, tag_name: &str) -> bool {
+                    tag_name == $tag_name
+                }
+            }
+        }
+    };
+    // Tail of the recursion for wildcard match, we generate nothing
+    (@structs $suffix:ident * $(=> $t:ty)?) => {
+        // nothing
+    };
+
+    // The next item in list is a string match, we generate the struct and impl (by calling
+    // ourselves with the item alone - invoking the tail pattern) and then we call ourselves
+    // recursively on the rest of the list.
+    (@structs $suffix:ident $tag_name:literal $(=> $t:ty)?, $($r_tag_name:tt $(=> $r_t:ty)?),+) => {
+        $crate::tree::paste_item! {
+            $crate::xml_path_type!(@structs $suffix $tag_name $(=> $t)?);
+            $crate::xml_path_type!(@structs [<$suffix A>] $($r_tag_name $(=> $r_t)?),*);
+        }
+    };
+
+    // The next item in list is a wildcard match - we do nothing and call ourselves recursively on
+    // the rest of the list.
+    (@structs $suffix:ident * $(=> $t:ty)?, $($r_tag_name:tt $(=> $r_t:ty)?),+) => {
+        $crate::tree::paste_item! {
+            $crate::xml_path_type!(@structs [<$suffix A>] $($r_tag_name $(=> $r_t)?),+);
+        }
+    };
+
+    // == @types ==
+    // This part generates the type by nesting `ElementEnter`, `ElementEnterDeserialize` and
+    // `ElementDeserialize`. They are build with matchers generated by the @structs part of with
+    // `AnyTagMatch` matcher.
+
+    // Tail rule - turns `"ccc" => Ccc` or `* => Ccc` expression into `ElementDeserialize`
+    (@types $type_name:ident $suffix:ident $tag_name:literal => $t:ty) => {
+        $crate::tree::paste_item! {
+            $crate::tree::ElementDeserialize<$t, [<$type_name __rapid_xml_generated_matchers>]::[<$t Matcher $suffix>]>
+        }
+    };
+    (@types $type_name:ident $suffix:ident * => $t:ty) => {
+        $crate::tree::ElementDeserialize::<$t, $crate::tree::AnyTagMatch>
     };
 
     // Tail rule - to inform user that the last expression must be `"ccc" => Ccc`, can't be just
     // `"ccc"`.
-    ($tag_name:literal) => {
-        compile_error!("Paths must end with `\"tag_name\" => Type` expression.")
-    };
+    (@types $type_name:ident $suffix:ident $tag_name:literal) => { $crate::xml_path_type!(*) };
+    (@types $type_name:ident $suffix:ident *) => { compile_error!("Paths must end with `\"tag_name\" => Type` expression.") };
 
-    // Recursive rule - turn `"ccc" => Ccc` expression at beginning into `ElementEnterDeserialize`
+    // Recursive rule - turn `"ccc" => Ccc` or `* => Ccc` expression at beginning into `ElementEnterDeserialize`
     // and call ourselves recursively on the rest.
-    ($tag_name:literal => $t:ty, $($r_tag_name:literal $(=> $r_t:ty)?),+) => {
-        $crate::ElementEnterDeserialize::<$t,
-            xml_path_type!($($r_tag_name $(=> $r_t)?),+)
-        >
+    (@types $type_name:ident $suffix:ident $tag_name:literal => $t:ty, $($r_tag_name:tt $(=> $r_t:ty)?),+) => {
+        $crate::tree::paste_item! {
+            $crate::tree::ElementEnterDeserialize<$t, [<$type_name __rapid_xml_generated_matchers>]::[<$t Matcher $suffix>],
+                $crate::xml_path_type!(@types $type_name [<$suffix A>] $($r_tag_name $(=> $r_t)?),+)
+            >
+        }
+    };
+    (@types $type_name:ident $suffix:ident * => $t:ty, $($r_tag_name:tt $(=> $r_t:ty)?),+) => {
+        $crate::tree::paste_item! {
+            $crate::tree::ElementEnterDeserialize::<$t, $crate::tree::AnyTagMatch,
+                $crate::xml_path_type!(@types $type_name [<$suffix A>] $($r_tag_name $(=> $r_t)?),+)
+            >
+        }
     };
 
-
-    // Recursive rule - turn `"ccc"` expression at beginning into `ElementEnter` and call ourselves
+    // Recursive rule - turn `"ccc"` or `*` expression at beginning into `ElementEnter` and call ourselves
     // recursively on the rest.
-    ($tag_name:literal, $($r_tag_name:literal $(=> $r_t:ty)?),+) => {
-        $crate::ElementEnter<
-            xml_path_type!($($r_tag_name $(=> $r_t)?),+)
-        >
+    (@types $type_name:ident $suffix:ident $tag_name:literal, $($r_tag_name:tt $(=> $r_t:ty)?),+) => {
+        $crate::tree::paste_item! {
+            $crate::tree::ElementEnter<[<$type_name __rapid_xml_generated_matchers>]::[<Matcher $suffix>],
+                $crate::xml_path_type!(@types $type_name [<$suffix A>] $($r_tag_name $(=> $r_t)?),+)
+            >
+        }
+    };
+    (@types $type_name:ident $suffix:ident *, $($r_tag_name:tt $(=> $r_t:ty)?),+) => {
+        $crate::tree::paste_item! {
+            $crate::tree::ElementEnter::<$crate::tree::AnyTagMatch,
+                $crate::xml_path_type!(@types $type_name [<$suffix A>] $($r_tag_name $(=> $r_t)?),+)
+            >
+        }
     };
 }
 
@@ -429,6 +653,11 @@ mod tests {
                         <ccc><m>400</m></ccc>
                     </bbb>
                 </aaa>
+                <aaa2>
+                    <bbb n="3">
+                        <ccc m="500"/>
+                    </bbb>
+                </aaa2>
             </root>
         "#;
 
@@ -455,37 +684,10 @@ mod tests {
         "#;
 
     #[test]
-    fn xml_path_macro() {
-        let path = xml_path!("bbb" => Bbb);
-        assert_eq!(path, ElementDeserialize::<Bbb>::tag("bbb"));
-
-        let path = xml_path!("bbb" => Bbb, "ccc" => Ccc);
-        assert_eq!(path, ElementEnterDeserialize::<Bbb, _>::tag("bbb", ElementDeserialize::<Ccc>::tag("ccc")));
-
-        let path = xml_path!("bbb", "ccc" => Ccc);
-        assert_eq!(path, ElementEnter::tag("bbb", ElementDeserialize::<Ccc>::tag("ccc")));
-
-        let path = xml_path!("aaa", "bbb" => Bbb, "ccc" => Ccc);
-        assert_eq!(path, ElementEnter::tag("aaa", ElementEnterDeserialize::<Bbb, _>::tag("bbb", ElementDeserialize::<Ccc>::tag("ccc"))));
-
-        let path = xml_path!("bbb" => Bbb, "aaa", "ccc" => Ccc);
-        assert_eq!(path, ElementEnterDeserialize::<Bbb, _>::tag("bbb", ElementEnter::tag("aaa", ElementDeserialize::<Ccc>::tag("ccc"))));
-    }
-
-    #[test]
-    fn xml_path_type_macro() {
-        let _: xml_path_type!("bbb" => Bbb) = xml_path!("bbb" => Bbb);
-        let _: xml_path_type!("bbb" => Bbb, "ccc" => Ccc) = xml_path!("bbb" => Bbb, "ccc" => Ccc);
-        let _: xml_path_type!("bbb", "ccc" => Ccc) = xml_path!("bbb", "ccc" => Ccc);
-        let _: xml_path_type!("aaa", "bbb" => Bbb, "ccc" => Ccc) = xml_path!("aaa", "bbb" => Bbb, "ccc" => Ccc);
-        let _: xml_path_type!("bbb" => Bbb, "aaa", "ccc" => Ccc) = xml_path!("bbb" => Bbb, "aaa", "ccc" => Ccc);
-    }
-
-    #[test]
     fn basic() {
         let path = xml_path!("root", "aaa", "bbb", "ccc" => Ccc);
 
-        let mut des = TreeDeserializer::from_reader(path, Cursor::new(&SAMPLE_XML[..]));
+        let mut des = TreeDeserializer::from_path_and_reader(path, Cursor::new(&SAMPLE_XML[..]));
 
         assert_eq!(des.next().unwrap().unwrap(), Ccc { m: 100 });
         assert_eq!(des.next().unwrap().unwrap(), Ccc { m: 200 });
@@ -495,10 +697,37 @@ mod tests {
     }
 
     #[test]
+    fn wildcard() {
+        let path = xml_path!("root", *, "bbb", "ccc" => Ccc);
+
+        let mut des = TreeDeserializer::from_path_and_reader(path, Cursor::new(&SAMPLE_XML[..]));
+
+        assert_eq!(des.next().unwrap().unwrap(), Ccc { m: 100 });
+        assert_eq!(des.next().unwrap().unwrap(), Ccc { m: 200 });
+        assert_eq!(des.next().unwrap().unwrap(), Ccc { m: 300 });
+        assert_eq!(des.next().unwrap().unwrap(), Ccc { m: 400 });
+        assert_eq!(des.next().unwrap().unwrap(), Ccc { m: 500 });
+        assert!(des.next().is_none());
+    }
+
+    #[test]
     fn multiple_elements() {
         let path = xml_path!("root", "aaa", "bbb" => Bbb, "ccc" => Ccc);
 
-        let mut des = TreeDeserializer::from_reader(path, Cursor::new(&SAMPLE_XML[..]));
+        let mut des = TreeDeserializer::from_path_and_reader(path, Cursor::new(&SAMPLE_XML[..]));
+
+        assert_eq!(des.next().unwrap().unwrap(), (Bbb { n: 1 }, Ccc { m: 100 }));
+        assert_eq!(des.next().unwrap().unwrap(), (Bbb { n: 1 }, Ccc { m: 200 }));
+        assert_eq!(des.next().unwrap().unwrap(), (Bbb { n: 2 }, Ccc { m: 300 }));
+        assert_eq!(des.next().unwrap().unwrap(), (Bbb { n: 2 }, Ccc { m: 400 }));
+        assert!(des.next().is_none());
+    }
+
+    xml_path_type!(MyPath: "root", "aaa", "bbb" => Bbb, "ccc" => Ccc);
+
+    #[test]
+    fn multiple_elements_with_type() {
+        let mut des = TreeDeserializer::<_, MyPath>::from_reader(Cursor::new(&SAMPLE_XML[..]));
 
         assert_eq!(des.next().unwrap().unwrap(), (Bbb { n: 1 }, Ccc { m: 100 }));
         assert_eq!(des.next().unwrap().unwrap(), (Bbb { n: 1 }, Ccc { m: 200 }));
@@ -511,7 +740,7 @@ mod tests {
     fn with_errors() {
         let path = xml_path!("root", "aaa", "bbb" => Bbb, "ccc" => Ccc);
 
-        let mut des = TreeDeserializer::from_reader(path, Cursor::new(&SAMPLE_XML_ERRORS[..]));
+        let mut des = TreeDeserializer::from_path_and_reader(path, Cursor::new(&SAMPLE_XML_ERRORS[..]));
 
         // TODO: The actual output may still change if we learn to recover from some errors better.
 

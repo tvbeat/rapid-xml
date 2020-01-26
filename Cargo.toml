@@ -8,6 +8,7 @@ edition = "2018"
 
 [dependencies]
 tuple_utils = "0.3.0"
+paste = "0.1.6"
 multiversion = "0.1.1"
 serde = "1.0.104"
 slice-deque = "0.3.0"
