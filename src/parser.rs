@@ -564,6 +564,10 @@ pub struct Parser<R: Read> {
     // Ring buffer that is always continuous in memory thanks to clever memory mapping
     buffer: SliceDeque<u8>,
 
+    // The index of the byte at the beginning of `buffer`. In other words, the amount of bytes that
+    // we thrown away because they were no longer needed in `buffer`.
+    buffer_starts_at: usize,
+
     // Indexes into the `buffer.as_slice()` of positions of control characters
     control_chars: Vec<usize>,
 
@@ -590,6 +594,7 @@ impl<R: Read> Parser<R> {
         Self {
             reader,
             buffer: SliceDeque::with_capacity(READ_SIZE * 2),
+            buffer_starts_at: 0,
             control_chars: Vec::new(),
             control_chars_read: 0,
             parsed_up_to: 0,
@@ -604,16 +609,15 @@ impl<R: Read> Parser<R> {
     /// Caller should first remove all used control characters from `control_chars`
     fn classify_more(&mut self) -> Result<(), std::io::Error> {
         // First we throw away the part of buffer that we no longer need.
-        let to_throw_away = (self.last_index / BLOCK_SIZE) * BLOCK_SIZE; // In theory we could throw away all `last_index` bytes, but if the SliceDeque decides to reallocate, it would shift the data such that the `head` is at beginning of the page, which would break our alignment, because `last_index` and `parsed_up_to` are not generally multiple of BLOCK_SIZE away.
-        self.last_index -= to_throw_away;
+        let to_throw_away = ((self.last_index - self.buffer_starts_at) / BLOCK_SIZE) * BLOCK_SIZE; // In theory we could throw away all `last_index` bytes, but if the SliceDeque decides to reallocate, it would shift the data such that the `head` is at beginning of the page, which would break our alignment, because `last_index` and `parsed_up_to` are not generally multiple of BLOCK_SIZE away.
         unsafe { // Safety: We know there is at least this much in the buffer
             self.buffer.move_head_unchecked(to_throw_away as isize);
         }
         self.parsed_up_to -= to_throw_away;
         for control_char in &mut self.control_chars { // Usually there shouldn't be anything in there, unless we are called from `get`
-            dbg!(*control_char, to_throw_away);
             *control_char -= to_throw_away;
         }
+        self.buffer_starts_at += to_throw_away;
 
         // Then we read into the buffer
         self.buffer.reserve(READ_SIZE); // This won't do anything if we already grew enough, unless we have some long unfinished json object still in the buffer.
@@ -685,16 +689,22 @@ impl<R: Read> Parser<R> {
             let index = self.control_chars[self.control_chars_read];
             self.control_chars_read += 1;
 
-            return Ok((self.buffer[index], index));
+            return Ok((self.buffer[index], index + self.buffer_starts_at));
         }
 
-        Ok((b'\0', 0))
+        Ok((b'\0', self.buffer.len() + self.buffer_starts_at))
     }
 
-    /// Get byte at given index, only +-1 byte around the last control character is guaranteed to
-    /// be there! Anything else will panic.
+    /// Get byte at given index.
     fn get(&mut self, index: usize) -> Result<u8, std::io::Error> {
         loop {
+            // Note that this must be here inside loop, because if we call classify_more, we need to
+            // do it over again.
+            let index = match index.checked_sub(self.buffer_starts_at) {
+                Some(index) => index,
+                None => unreachable!("Asking for data that are no longer in buffer!"),
+            };
+
             match self.buffer.get(index) {
                 Some(c) => return Ok(*c),
                 None => {
@@ -712,6 +722,16 @@ impl<R: Read> Parser<R> {
                 }
             }
         }
+    }
+
+    fn get_slice(&self, from: usize, to: usize) -> &[u8] {
+        let (from, to) = match (from.checked_sub(self.buffer_starts_at),
+                                to.checked_sub(self.buffer_starts_at)) {
+            (Some(from), Some(to)) => (from, to),
+            _ => unreachable!("Asking for data that are no longer in buffer!"),
+        };
+
+        &self.buffer[from..to]
     }
 
     /// Retrieve next `Event`
@@ -750,7 +770,7 @@ impl<R: Read> Parser<R> {
                                 self.state = State::AtTagStart;
 
                                 if from < i {
-                                    return Ok(Event::Text(DeferredString::new(&self.buffer[from..i])));
+                                    return Ok(Event::Text(DeferredString::new(self.get_slice(from, i))));
                                 } else {
                                     break;
                                 }
@@ -819,7 +839,7 @@ impl<R: Read> Parser<R> {
                                             self.state = State::AtTagStart;
                                             if from < last_non_whitespace {
                                                 return Ok(Event::Text(DeferredString::with_options(
-                                                    &self.buffer[from..=last_non_whitespace],
+                                                    self.get_slice(from, last_non_whitespace + 1),
                                                     needs_decoding,
                                                     needs_eol_normalizing,
                                                 )));
@@ -882,7 +902,7 @@ impl<R: Read> Parser<R> {
                                         let to = to.get_or_insert(i);
                                         self.last_index = i;
                                         self.state = State::InText;
-                                        return Ok(Event::EndTag(DeferredString::new(&self.buffer[from..*to])));
+                                        return Ok(Event::EndTag(DeferredString::new(self.get_slice(from, *to))));
                                     }
 
                                     (c, i) => return Err(ParseError::MalformedXML {
@@ -902,7 +922,7 @@ impl<R: Read> Parser<R> {
                                     let from = self.last_index + 1;
                                     self.last_index = i;
                                     self.state = State::InTag;
-                                    return Ok(Event::StartTag(DeferredString::new(&self.buffer[from..i])));
+                                    return Ok(Event::StartTag(DeferredString::new(self.get_slice(from, i))));
                                 }
 
                                 // Immediate '>', the tag is over right after the tag's name. Report that
@@ -918,7 +938,7 @@ impl<R: Read> Parser<R> {
 
                                     let from = self.last_index + 1;
                                     self.last_index = i;
-                                    return Ok(Event::StartTag(DeferredString::new(&self.buffer[from..to])));
+                                    return Ok(Event::StartTag(DeferredString::new(self.get_slice(from, to))));
                                 }
 
                                 // Any other control character at this point is malformed XML!
@@ -986,7 +1006,7 @@ impl<R: Read> Parser<R> {
                                 }
                             }
 
-                            return Ok(Event::AttributeName(DeferredString::new(&self.buffer[from..to])));
+                            return Ok(Event::AttributeName(DeferredString::new(self.get_slice(from, to))));
                         }
 
                         // Equal sight means we must be behind attribute name
@@ -994,7 +1014,7 @@ impl<R: Read> Parser<R> {
                             let from = self.last_index + 1;
                             self.last_index = i;
                             self.state = State::InTagAfterAttributeName;
-                            return Ok(Event::AttributeName(DeferredString::new(&self.buffer[from..i])));
+                            return Ok(Event::AttributeName(DeferredString::new(self.get_slice(from, i))));
                         }
 
                         // EOF is not allowed in the middle of a tag.
@@ -1097,7 +1117,7 @@ impl<R: Read> Parser<R> {
                     self.last_index = to;
                     self.state = State::InTag;
                     return Ok(Event::AttributeValue(DeferredString::with_options(
-                        &self.buffer[from..to],
+                        self.get_slice(from, to),
                         needs_decoding,
                         needs_eol_normalizing,
                     )));
