@@ -1162,6 +1162,11 @@ impl<R: Read> Parser<R> {
 
         Ok(())
     }
+
+    /// Returns the byte index of the last read character
+    pub fn last_position(&self) -> usize {
+        self.last_index
+    }
 }
 
 #[cfg(test)]
