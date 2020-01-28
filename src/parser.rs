@@ -20,7 +20,6 @@ const BLOCK_SIZE: usize = 64; // Size of u64, 64 characters, 4 sse2 128i loads, 
 ///
 /// Searches the `input` but only from the `start` index forwards. If there was anything in the
 /// `positions` vector, the new values are appended behind.
-#[inline(always)]
 fn classify_fallback(input: &[u8], start: usize, positions: &mut Vec<usize>) {
     for (i, c) in input[start..].iter().enumerate() {
         match c {
@@ -37,7 +36,7 @@ fn classify_fallback(input: &[u8], start: usize, positions: &mut Vec<usize>) {
 ///
 /// Can be only called if SSSE3 is available.
 #[cfg(target_arch = "x86_64")]
-#[inline(always)]
+#[target_feature(enable = "ssse3")]
 unsafe fn classify_ssse3(input: &[u8], start: usize, positions: &mut Vec<usize>) {
     // SIMD classification using two `pshufb` instructions (`_mm_shuffle_epi8` intrinsic) that match
     // the high and low nibble of the byte. Combining that together we get a non-zero value for every
@@ -196,8 +195,7 @@ unsafe fn classify_ssse3(input: &[u8], start: usize, positions: &mut Vec<usize>)
 ///
 /// Can be only called if AVX2 is available.
 #[cfg(target_arch = "x86_64")]
-#[inline(always)]
-#[allow(unused)]
+#[target_feature(enable = "avx2")]
 unsafe fn classify_avx2(input: &[u8], start: usize, positions: &mut Vec<usize>) {
     // Same algorithm as classify_ssse3, but working on half the amount of twice as long vectors.
 
@@ -211,7 +209,7 @@ unsafe fn classify_avx2(input: &[u8], start: usize, positions: &mut Vec<usize>) 
     const EQ: i8           = (1 << 6);
     const GT: i8           = (1 << 7);
 
-    let lo_nibbles_lookup = _mm256_set_epi8(
+    let lo_nibbles_lookup = _mm256_setr_epi8(
         /* 0 */ SPACE_B,
         /* 1 */ NOTHING,
         /* 2 */ DOUBLE_QUOTE,
@@ -247,7 +245,7 @@ unsafe fn classify_avx2(input: &[u8], start: usize, positions: &mut Vec<usize>) 
         /* f */ NOTHING,
     );
 
-    let hi_nibbles_lookup = _mm256_set_epi8(
+    let hi_nibbles_lookup = _mm256_setr_epi8(
         /* 0 */ SPACE_A,
         /* 1 */ NOTHING,
         /* 2 */ SPACE_B | DOUBLE_QUOTE | SINGLE_QUOTE | AMPERSAND,
@@ -343,7 +341,7 @@ multiversion! {
     fn classify(input: &[u8], start: usize, positions: &mut Vec<usize>)
 
     // Order is from the best to worst.
-//    "[x86|x86_64]+avx2" => classify_avx2, // Somehow this turns out to be even slower than classify_fallback.
+    "[x86|x86_64]+avx2" => classify_avx2,
     "[x86|x86_64]+ssse3" => classify_ssse3,
     default => classify_fallback,
 }
@@ -1188,7 +1186,7 @@ mod tests {
             }
             if is_x86_feature_detected!("avx2") {
                 positions_alt.clear();
-                unsafe { classify_ssse3(input, start, &mut positions_alt); }
+                unsafe { classify_avx2(input, start, &mut positions_alt); }
                 assert_eq!(positions, &positions_alt);
             }
         }
@@ -1317,10 +1315,10 @@ mod bench {
         }
     }
 
-    /*#[bench]
+    #[bench]
     fn bench_classify_avx2(b: &mut Bencher) {
         if is_x86_feature_detected!("avx2") {
             bench_classify_fn(b, classify_avx2);
         }
-    }*/
+    }
 }
