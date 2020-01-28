@@ -354,6 +354,7 @@ impl<T: DeserializeOwned, M: TagMatcher> XmlPath for ElementDeserialize<T, M> {
 pub struct TreeDeserializer<R: Read, N> {
     parser: Parser<R>,
     path: N,
+    last_error_at: usize,
 }
 
 /// Type alias that helps to get the output type of TreeDeserializer
@@ -365,6 +366,7 @@ impl<R: Read, N: XmlPath> TreeDeserializer<R, N> {
         Self {
             parser,
             path,
+            last_error_at: std::usize::MAX,
         }
     }
 
@@ -380,6 +382,7 @@ impl<R: Read, N: XmlPath + Default> TreeDeserializer<R, N> {
         Self {
             parser,
             path: N::default(),
+            last_error_at: std::usize::MAX,
         }
     }
 
@@ -395,7 +398,17 @@ impl<R: Read, N: XmlPath> Iterator for TreeDeserializer<R, N> where N::Output: D
     fn next(&mut self) -> Option<Self::Item> {
         match self.path.go(&mut self.parser) {
             Some(Ok(tuple)) => Some(Ok(tuple.detuple())),
-            Some(Err(err)) => Some(Err(err)),
+            Some(Err(err)) => {
+                let error_position = self.parser.last_position();
+                if error_position == self.last_error_at {
+                    // If we get another error at the same place, we consider the error
+                    // unrecoverable and report no more elements
+                    None
+                } else {
+                    self.last_error_at = error_position;
+                    Some(Err(err))
+                }
+            }
             None => None,
         }
     }
