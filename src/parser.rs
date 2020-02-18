@@ -479,6 +479,13 @@ impl<'a> DeferredString<'a> {
         // TODO: Handle decoding and eol normalizing!
         Ok(std::str::from_utf8(self.bytes).map(Cow::Borrowed)?)
     }
+
+    /// Returns byte slice **without** checking if it is valid Utf-8, decoding
+    /// escaped characters and normalizing EOL may still happen.
+    pub fn to_bytes(&self) -> Cow<[u8]> {
+        // TODO: Handle decoding and eol normalizing!
+        Cow::Borrowed(self.bytes)
+    }
 }
 
 impl<'a> TryInto<InlinableString> for DeferredString<'a> {
