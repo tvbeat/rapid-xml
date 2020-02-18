@@ -18,7 +18,7 @@ pub enum DeserializeError {
     Parsing(ParseError),
 
     /// Error parsing integer
-    ParseInt(std::num::ParseIntError),
+    ParseInt(btoi::ParseIntegerError),
 
     /// Error parsing floating point number
     ParseFloat(std::num::ParseFloatError),
@@ -66,8 +66,8 @@ impl From<ParseError> for DeserializeError {
     }
 }
 
-impl From<std::num::ParseIntError> for DeserializeError {
-    fn from(err: std::num::ParseIntError) -> Self {
+impl From<btoi::ParseIntegerError> for DeserializeError {
+    fn from(err: btoi::ParseIntegerError) -> Self {
         DeserializeError::ParseInt(err)
     }
 }
@@ -165,35 +165,35 @@ impl<'de: 'a, 'a, R: Read> serde::Deserializer<'de> for &'a mut Deserializer<'a,
     }
 
     fn deserialize_i8<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.with_next_text(|t| visitor.visit_i8(t.to_str()?.parse()?))
+        self.with_next_text(|t| visitor.visit_i8(btoi::btoi(t.to_bytes().as_ref())?))
     }
 
     fn deserialize_i16<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.with_next_text(|t| visitor.visit_i16(t.to_str()?.parse()?))
+        self.with_next_text(|t| visitor.visit_i16(btoi::btoi(t.to_bytes().as_ref())?))
     }
 
     fn deserialize_i32<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.with_next_text(|t| visitor.visit_i32(t.to_str()?.parse()?))
+        self.with_next_text(|t| visitor.visit_i32(btoi::btoi(t.to_bytes().as_ref())?))
     }
 
     fn deserialize_i64<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.with_next_text(|t| visitor.visit_i64(t.to_str()?.parse()?))
+        self.with_next_text(|t| visitor.visit_i64(btoi::btoi(t.to_bytes().as_ref())?))
     }
 
     fn deserialize_u8<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.with_next_text(|t| visitor.visit_u8(t.to_str()?.parse()?))
+        self.with_next_text(|t| visitor.visit_u8(btoi::btou(t.to_bytes().as_ref())?))
     }
 
     fn deserialize_u16<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.with_next_text(|t| visitor.visit_u16(t.to_str()?.parse()?))
+        self.with_next_text(|t| visitor.visit_u16(btoi::btou(t.to_bytes().as_ref())?))
     }
 
     fn deserialize_u32<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.with_next_text(|t| visitor.visit_u32(t.to_str()?.parse()?))
+        self.with_next_text(|t| visitor.visit_u32(btoi::btou(t.to_bytes().as_ref())?))
     }
 
     fn deserialize_u64<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.with_next_text(|t| visitor.visit_u64(t.to_str()?.parse()?))
+        self.with_next_text(|t| visitor.visit_u64(btoi::btou(t.to_bytes().as_ref())?))
     }
 
     fn deserialize_f32<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
@@ -309,9 +309,9 @@ impl<'de: 'a, 'a, R: Read> serde::Deserializer<'de> for &'a mut Deserializer<'a,
                 }
 
                 match self.parser.next()? {
-                    Event::AttributeValue(value) =>
+                    Event::AttributeValue(string) =>
                         seed.deserialize(ParseDeserializer {
-                            string: value.to_str()?,
+                            string,
                         }),
                     e => unreachable!("Parser should have never given us {:?} event in this place.", e),
                 }
@@ -404,16 +404,15 @@ impl<'de: 'a, 'a, R: Read> serde::Deserializer<'de> for &'a mut Deserializer<'a,
     }
 }
 
-// TODO: Isn't there something like this as utility in serde already?
 struct ParseDeserializer<'a> {
-    string: Cow<'a, str>,
+    string: DeferredString<'a>,
 }
 
 impl<'de: 'a, 'a> serde::Deserializer<'de> for ParseDeserializer<'a> {
     type Error = DeserializeError;
 
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        match self.string {
+        match self.string.to_str()? {
             Cow::Owned(string) => visitor.visit_string(string),
             Cow::Borrowed(str) => visitor.visit_str(str),
         }
@@ -421,67 +420,71 @@ impl<'de: 'a, 'a> serde::Deserializer<'de> for ParseDeserializer<'a> {
 
     fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
         // TODO: Do we want to accept other strings in addition to "true" and "false"?
-        visitor.visit_bool(self.string.parse()?)
+        visitor.visit_bool(self.string.to_str()?.parse()?)
     }
 
     fn deserialize_i8<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_i8(self.string.parse()?)
+        visitor.visit_i8(btoi::btoi(self.string.to_bytes().as_ref())?)
     }
 
     fn deserialize_i16<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_i16(self.string.parse()?)
+        visitor.visit_i16(btoi::btoi(self.string.to_bytes().as_ref())?)
     }
 
     fn deserialize_i32<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_i32(self.string.parse()?)
+        visitor.visit_i32(btoi::btoi(self.string.to_bytes().as_ref())?)
     }
 
     fn deserialize_i64<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_i64(self.string.parse()?)
+        visitor.visit_i64(btoi::btoi(self.string.to_bytes().as_ref())?)
     }
 
     fn deserialize_u8<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_u8(self.string.parse()?)
+        visitor.visit_u8(btoi::btou(self.string.to_bytes().as_ref())?)
     }
 
     fn deserialize_u16<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_u16(self.string.parse()?)
+        visitor.visit_u16(btoi::btou(self.string.to_bytes().as_ref())?)
     }
 
     fn deserialize_u32<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_u32(self.string.parse()?)
+        visitor.visit_u32(btoi::btou(self.string.to_bytes().as_ref())?)
     }
 
     fn deserialize_u64<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_u64(self.string.parse()?)
+        visitor.visit_u64(btoi::btou(self.string.to_bytes().as_ref())?)
     }
 
     fn deserialize_f32<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_f32(self.string.parse()?)
+        visitor.visit_f32(self.string.to_str()?.parse()?)
     }
 
     fn deserialize_f64<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_f64(self.string.parse()?)
+        visitor.visit_f64(self.string.to_str()?.parse()?)
     }
 
     fn deserialize_char<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        if self.string.len() == 1 {
-            visitor.visit_char(self.string.chars().next().unwrap()) // NOTE(unwrap): We know there is exactly one character.
+        let s = self.string.to_str()?;
+        if s.len() == 1 {
+            visitor.visit_char(s.chars().next().unwrap()) // NOTE(unwrap): We know there is exactly one character.
         } else {
             Err(DeserializeError::NotOneCharacter)
         }
     }
 
     fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_str(self.string.as_ref())
+        visitor.visit_str(self.string.to_str()?.as_ref())
     }
 
     fn deserialize_string<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_string(self.string.into_owned())
+        visitor.visit_string(self.string.to_str()?.into_owned())
     }
 
     fn deserialize_bytes<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_bytes(self.string.as_bytes())
+        match self.string.to_bytes() {
+            Cow::Owned(vec) => visitor.visit_byte_buf(vec),
+            Cow::Borrowed(bytes) => visitor.visit_bytes(bytes),
+        }
     }
 
     fn deserialize_byte_buf<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
