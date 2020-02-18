@@ -283,8 +283,10 @@ impl<'de: 'a, 'a, R: Read> serde::Deserializer<'de> for &'a mut Deserializer<'a,
                         Event::AttributeName(name) =>
                             seed.deserialize(name.to_str()?.into_deserializer()).map(Some),
                         Event::StartTag(name) => {
-                            self.in_tag = Some(name.try_into()?);
-                            seed.deserialize(name.to_str()?.into_deserializer()).map(Some)
+                            let tag_name: InlinableString = name.try_into()?;
+                            let out = seed.deserialize(tag_name.into_deserializer()).map(Some);
+                            self.in_tag = Some(tag_name);
+                            out
                         }
                         Event::EndTag(_) | Event::EndTagImmediate => Ok(None),
                         Event::StartTagDone => {
