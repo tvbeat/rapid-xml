@@ -802,6 +802,9 @@ impl<R: Read> Parser<R> {
                                     last_whitespace = i;
                                     last_non_whitespace = i - 1;
                                 }
+                                if let b'&' = c {
+                                    needs_decoding = true;
+                                }
                                 loop {
                                     match self.next_control_char()? {
                                         // The presence of carriage return character means that we
@@ -871,28 +874,6 @@ impl<R: Read> Parser<R> {
                 // If we are at the start of a tag
                 State::AtTagStart => {
                     match self.get(self.last_index + 1)? {
-                        // Is it a processing instruction? Then we skip it...
-                        b'?' => {
-                            loop {
-                                let (c, i) = self.next_control_char()?;
-                                if c == b'>' && self.get(i - 1)? == b'?' {
-                                    self.last_index = i;
-                                    self.state = State::InText;
-                                    break;
-                                }
-                                if c == b'\0' {
-                                    return Err(ParseError::MalformedXML {
-                                        byte: Some(i),
-                                        character: None,
-                                        kind: MalformedXMLKind::UnexpectedEof,
-                                    });
-                                }
-                            }
-                        }
-
-                        // Is it a comment, CDATA or something else? Oops, we can't handle that yet.
-                        b'!' => unimplemented!("TODO: Handle <! tags"),
-
                         // Is it closing tag? Find the end of it and report it.
                         b'/' => {
                             let from = self.last_index + 2;
@@ -918,6 +899,28 @@ impl<R: Read> Parser<R> {
                                 }
                             }
                         }
+
+                        // Is it a processing instruction? Then we skip it...
+                        b'?' => {
+                            loop {
+                                let (c, i) = self.next_control_char()?;
+                                if c == b'>' && self.get(i - 1)? == b'?' {
+                                    self.last_index = i;
+                                    self.state = State::InText;
+                                    break;
+                                }
+                                if c == b'\0' {
+                                    return Err(ParseError::MalformedXML {
+                                        byte: Some(i),
+                                        character: None,
+                                        kind: MalformedXMLKind::UnexpectedEof,
+                                    });
+                                }
+                            }
+                        }
+
+                        // Is it a comment, CDATA or something else? Oops, we can't handle that yet.
+                        b'!' => unimplemented!("TODO: Handle <! tags"),
 
                         // So it is normal opening tag...
                         _ => {
@@ -1047,16 +1050,16 @@ impl<R: Read> Parser<R> {
                     // Find the opening quote and figure out whether it is single or double quote
                     let (from, single_quoted) = loop {
                         match self.next_control_char()? {
-                            (b'\t', _) | (b'\n', _) | (b'\r', _) | (b' ', _) => {
-                                // NOOP
-                            }
-
                             (b'"', i) => {
                                 break (i + 1, false);
                             }
 
                             (b'\'', i) => {
                                 break (i + 1, true);
+                            }
+
+                            (b'\t', _) | (b'\n', _) | (b'\r', _) | (b' ', _) => {
+                                // NOOP
                             }
 
                             (b'\0', _) => return Err(ParseError::MalformedXML {
@@ -1083,6 +1086,14 @@ impl<R: Read> Parser<R> {
 
                     let to = loop {
                         match self.next_control_char()? {
+                            (b'"', i) if !single_quoted => {
+                                break i;
+                            }
+
+                            (b'\'', i) if single_quoted => {
+                                break i;
+                            }
+
                             (b'\t', _) | (b'\n', _) | (b' ', _) | (b'=', _) | (b'>', _) => {
                                 // NOOP
                             }
@@ -1093,14 +1104,6 @@ impl<R: Read> Parser<R> {
 
                             (b'&', _) => {
                                 needs_decoding = true;
-                            }
-
-                            (b'"', i) if !single_quoted => {
-                                break i;
-                            }
-
-                            (b'\'', i) if single_quoted => {
-                                break i;
                             }
 
                             (b'\0', _) => return Err(ParseError::MalformedXML {
