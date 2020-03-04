@@ -65,14 +65,14 @@ unsafe fn classify_ssse3(input: &[u8], start: usize, positions: &mut Vec<usize>)
 
 
     const NOTHING: i8      = 0;
-    const SPACE_A: i8      = (1 << 0);
-    const SPACE_B: i8      = (1 << 1);
-    const DOUBLE_QUOTE: i8 = (1 << 2);
-    const SINGLE_QUOTE: i8 = (1 << 3);
-    const AMPERSAND: i8    = (1 << 4);
-    const LQ: i8           = (1 << 5);
-    const EQ: i8           = (1 << 6);
-    const GT: i8           = (1 << 7);
+    const SPACE_A: i8      = 1 << 0;
+    const SPACE_B: i8      = 1 << 1;
+    const DOUBLE_QUOTE: i8 = 1 << 2;
+    const SINGLE_QUOTE: i8 = 1 << 3;
+    const AMPERSAND: i8    = 1 << 4;
+    const LQ: i8           = 1 << 5;
+    const EQ: i8           = 1 << 6;
+    const GT: i8           = 1 << 7;
 
     let lo_nibbles_lookup = _mm_setr_epi8(
         /* 0 */ SPACE_B,
@@ -200,14 +200,14 @@ unsafe fn classify_avx2(input: &[u8], start: usize, positions: &mut Vec<usize>) 
     // Same algorithm as classify_ssse3, but working on half the amount of twice as long vectors.
 
     const NOTHING: i8      = 0;
-    const SPACE_A: i8      = (1 << 0);
-    const SPACE_B: i8      = (1 << 1);
-    const DOUBLE_QUOTE: i8 = (1 << 2);
-    const SINGLE_QUOTE: i8 = (1 << 3);
-    const AMPERSAND: i8    = (1 << 4);
-    const LQ: i8           = (1 << 5);
-    const EQ: i8           = (1 << 6);
-    const GT: i8           = (1 << 7);
+    const SPACE_A: i8      = 1 << 0;
+    const SPACE_B: i8      = 1 << 1;
+    const DOUBLE_QUOTE: i8 = 1 << 2;
+    const SINGLE_QUOTE: i8 = 1 << 3;
+    const AMPERSAND: i8    = 1 << 4;
+    const LQ: i8           = 1 << 5;
+    const EQ: i8           = 1 << 6;
+    const GT: i8           = 1 << 7;
 
     let lo_nibbles_lookup = _mm256_setr_epi8(
         /* 0 */ SPACE_B,
