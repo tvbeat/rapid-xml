@@ -4,14 +4,15 @@
 use std::io::Read;
 use std::marker::PhantomData;
 
+#[doc(hidden)]
+pub use paste::item as paste_item;
 use serde::de::DeserializeOwned;
 use tuple_utils::Prepend;
 
-#[doc(hidden)]
-pub use paste::item as paste_item; // Re-exported so we can use it in our macro. Is there better way?
-
 use crate::de::{DeserializeError, Deserializer};
-use crate::parser::{Event, Parser};
+use crate::parser::{EventCode, Parser};
+
+// Re-exported so we can use it in our macro. Is there better way?
 
 /// Utility that turns single-element tuple into that element and keeps multi-element tuples as
 /// they are
@@ -244,26 +245,29 @@ impl<M: TagMatcher, N: XmlPath> XmlPath for ElementEnter<M, N> {
     fn go<R: Read>(&mut self, parser: &mut Parser<R>) -> Option<Result<Self::Output, DeserializeError>> {
         loop {
             if self.entered {
+                //eprintln!("ElementEnter {:?}: Already entered, calling next.", self as *const ElementEnter<M, N>);
                 if let Some(out) = self.next.go(parser) {
                     return Some(out);
                 }
             }
             self.entered = false;
 
-            let event = try_some!(parser.next());
-            match event {
-                Event::StartTag(tag_name) => {
-                    let tag_name = try_some!(tag_name.to_str());
+            let mut event = try_some!(parser.next());
+            //eprintln!("ElementEnter {:?}: Got event {:?}...", self as *const ElementEnter<M, N>, event);
+            match event.code() {
+                EventCode::StartTag => {
+                    let tag_name = try_some!(event.get_str());
                     if self.tag_matcher.matches(tag_name.as_ref()) {
+                        //eprintln!("{:?}: Matched! Will enter.", self as *const ElementEnter<M, N>);
                         self.entered = true;
                     } else {
                         try_some!(parser.finish_tag(1));
                     }
                 },
-                Event::EndTagImmediate | Event::EndTag(_) | Event::Eof => {
+                EventCode::EndTagImmediate | EventCode::EndTag | EventCode::Eof => {
                     return None;
                 },
-                Event::StartTagDone | Event::AttributeName(_) | Event::AttributeValue(_) | Event::Text(_) => {}
+                EventCode::AttributeName | EventCode::AttributeValue | EventCode::Text => {}
             }
         }
     }
@@ -277,6 +281,7 @@ impl<T: DeserializeOwned + Clone, M: TagMatcher, N: XmlPath> XmlPath for Element
     fn go<R: Read>(&mut self, parser: &mut Parser<R>) -> Option<Result<Self::Output, DeserializeError>> {
         loop {
             if let Some(entered) = &self.entered {
+                //eprintln!("ElementEnterDeserialize {:?}: Already entered, calling next.", self as *const ElementEnterDeserialize<T, M, N>);
                 if let Some(out) = self.next.go(parser) {
                     return match out {
                         Ok(out) => {
@@ -291,12 +296,13 @@ impl<T: DeserializeOwned + Clone, M: TagMatcher, N: XmlPath> XmlPath for Element
             }
             self.entered = None;
 
-            let event = try_some!(parser.next());
-            match event {
-                Event::StartTag(tag_name) => {
-                    let tag_name = try_some!(tag_name.to_str());
+            let mut event = try_some!(parser.next());
+            //eprintln!("ElementEnterDeserialize {:?}: Got event {:?}...", self as *const ElementEnterDeserialize<T, M, N>, event);
+            match event.code() {
+                EventCode::StartTag => {
+                    let tag_name = try_some!(event.get_str());
                     if self.tag_matcher.matches(&tag_name) {
-                        let opening_tag = tag_name.as_ref().into();
+                        let opening_tag = tag_name.into();
                         let mut des = Deserializer::new_inside_tag(parser, opening_tag, true);
                         match T::deserialize(&mut des) {
                             Ok(value) => {
@@ -315,13 +321,13 @@ impl<T: DeserializeOwned + Clone, M: TagMatcher, N: XmlPath> XmlPath for Element
                         try_some!(parser.finish_tag(1));
                     }
                 },
-                Event::EndTagImmediate | Event::EndTag(_) => {
+                EventCode::EndTagImmediate | EventCode::EndTag => {
                     return None;
                 },
-                Event::Eof => {
+                EventCode::Eof => {
                     return Some(Err(DeserializeError::UnexpectedEof));
                 },
-                Event::StartTagDone | Event::AttributeName(_) | Event::AttributeValue(_) | Event::Text(_) => {}
+                EventCode::AttributeName | EventCode::AttributeValue | EventCode::Text => {}
             }
         }
     }
@@ -332,23 +338,26 @@ impl<T: DeserializeOwned, M: TagMatcher> XmlPath for ElementDeserialize<T, M> {
 
     fn go<R: Read>(&mut self, parser: &mut Parser<R>) -> Option<Result<Self::Output, DeserializeError>> {
         loop {
-            let event = try_some!(parser.next());
-            match event {
-                Event::StartTag(tag_name) => {
-                    let tag_name = try_some!(tag_name.to_str());
+            let mut event = try_some!(parser.next());
+            //eprintln!("ElementDeserialize {:?}: Got event {:?}", self as *const ElementDeserialize<T, M>, event);
+            match event.code() {
+                EventCode::StartTag => {
+                    //eprintln!("ElementDeserialize {:?}: Got start tag, will deserialize", self as *const ElementDeserialize<T, M>);
+                    let tag_name = try_some!(event.get_str());
                     if self.tag_matcher.matches(tag_name.as_ref()) {
-                        let opening_tag = tag_name.as_ref().into();
+                        let opening_tag = tag_name.into();
                         let mut des = Deserializer::new_inside_tag(parser, opening_tag, false);
                         return Some(Ok((try_some!(T::deserialize(&mut des)), )))
                     }
                 },
-                Event::EndTagImmediate | Event::EndTag(_) => {
+                EventCode::EndTagImmediate | EventCode::EndTag => {
+                    //eprintln!("ElementDeserialize {:?}: Got end tag (immediate), will return up", self as *const ElementDeserialize<T, M>);
                     return None;
                 },
-                Event::Eof => {
+                EventCode::Eof => {
                     return Some(Err(DeserializeError::UnexpectedEof));
                 },
-                Event::StartTagDone | Event::AttributeName(_) | Event::AttributeValue(_) | Event::Text(_) => {}
+                EventCode::AttributeName | EventCode::AttributeValue | EventCode::Text => {}
             }
         }
     }
@@ -410,17 +419,7 @@ impl<R: Read, N: XmlPath> Iterator for TreeDeserializer<R, N> where N::Output: D
     fn next(&mut self) -> Option<Self::Item> {
         match self.path.go(&mut self.parser) {
             Some(Ok(tuple)) => Some(Ok(tuple.detuple())),
-            Some(Err(err)) => {
-                let error_position = self.parser.last_position();
-                if error_position == self.last_error_at {
-                    // If we get another error at the same place, we consider the error
-                    // unrecoverable and report no more elements
-                    None
-                } else {
-                    self.last_error_at = error_position;
-                    Some(Err(err))
-                }
-            }
+            Some(Err(err)) => Some(Err(err)),
             None => None,
         }
     }
@@ -726,6 +725,22 @@ mod tests {
     }
 
     #[test]
+    fn basic_100_times() {
+        let path = xml_path!("root", "aaa", "bbb", "ccc" => Ccc);
+
+        let xml = SAMPLE_XML.repeat(100);
+        let mut des = TreeDeserializer::from_path_and_reader(path, Cursor::new(&xml));
+
+        for _ in 0..100 {
+            assert_eq!(des.next().unwrap().unwrap(), Ccc { m: 100 });
+            assert_eq!(des.next().unwrap().unwrap(), Ccc { m: 200 });
+            assert_eq!(des.next().unwrap().unwrap(), Ccc { m: 300 });
+            assert_eq!(des.next().unwrap().unwrap(), Ccc { m: 400 });
+        }
+        assert!(des.next().is_none());
+    }
+
+    #[test]
     fn wildcard() {
         let path = xml_path!("root", *, "bbb", "ccc" => Ccc);
 
@@ -777,7 +792,6 @@ mod tests {
         assert!(des.next().unwrap().is_err());
         assert_eq!(des.next().unwrap().unwrap(), (Bbb { n: 1 }, Ccc { m: 200 }));
         assert!(des.next().unwrap().is_err()); // Bad attribute value
-        assert!(des.next().unwrap().is_err()); // Bad attribute name (rest of the bad value)
         assert_eq!(des.next().unwrap().unwrap(), (Bbb { n: 2 }, Ccc { m: 300 }));
         assert!(des.next().unwrap().is_err());
         assert!(des.next().is_none());

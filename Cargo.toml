@@ -10,10 +10,12 @@ edition = "2018"
 btoi = "0.4.2"
 tuple_utils = "0.3.0"
 paste = "0.1.6"
-multiversion = "0.1.1"
+multiversion = "0.5.1"
 serde = "1.0.104"
 slice-deque = "0.3.0"
-inlinable_string = "0.1.10"
+twoway = "0.2.1"
+inlinable_string = "0.1.11"
+num_enum = "0.4.2"
 
 [dev-dependencies]
 serde_derive = "1.0.104"
@@ -22,3 +24,7 @@ serde_derive = "1.0.104"
 # Enable this feature to enable benchmarks using the (currently) unstable
 # test::Bencher.
 bencher = []
+
+[[bin]]
+path = "src/build_dfa.rs"
+name = "build_dfa"

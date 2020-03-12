@@ -1,7 +1,5 @@
 //! Contains serde Deserializer build on top of `Parser` from `parse`.
 
-use std::borrow::Cow;
-use std::convert::TryInto;
 use std::fmt::Display;
 use std::io::Read;
 
@@ -9,13 +7,16 @@ use inlinable_string::InlinableString;
 use serde::{Deserializer as _, forward_to_deserialize_any};
 use serde::de::{DeserializeSeed, IntoDeserializer, Visitor};
 
-use crate::parser::{DeferredString, Event, ParseError, Parser};
+use crate::parser::{Event, EventCode, ParseError, Parser, DecodeError};
 
 /// Error while parsing or deserializing
 #[derive(Debug)]
 pub enum DeserializeError {
     /// Error from underlying parser
     Parsing(ParseError),
+
+    /// Error decoding string
+    Decoding(DecodeError),
 
     /// Error parsing integer
     ParseInt(btoi::ParseIntegerError),
@@ -49,6 +50,7 @@ impl Display for DeserializeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
             DeserializeError::Parsing(err) => Display::fmt(err, f),
+            DeserializeError::Decoding(err) => Display::fmt(err, f),
             DeserializeError::ParseInt(err) => Display::fmt(err, f),
             DeserializeError::ParseFloat(err) => Display::fmt(err, f),
             DeserializeError::ParseBool(err) => Display::fmt(err, f),
@@ -67,6 +69,12 @@ impl std::error::Error for DeserializeError {}
 impl From<ParseError> for DeserializeError {
     fn from(err: ParseError) -> Self {
         DeserializeError::Parsing(err)
+    }
+}
+
+impl From<DecodeError> for DeserializeError {
+    fn from(err: DecodeError) -> Self {
+        DeserializeError::Decoding(err)
     }
 }
 
@@ -106,14 +114,14 @@ impl<'a, R: Read> Deserializer<'a, R> {
     pub fn new(parser: &'a mut Parser<R>) -> Result<Self, DeserializeError> {
         // Enter the root element
         loop {
-            let event = parser.next()?;
-            match event {
-                Event::StartTag(tag_name) => {
-                    let opening_tag = tag_name.try_into()?;
+            let mut event = parser.next()?;
+            match event.code() {
+                EventCode::StartTag => {
+                    let opening_tag = event.get_str()?.into();
                     return Ok(Self::new_inside_tag(parser, opening_tag, false));
                 }
 
-                Event::Text(_) => {
+                EventCode::Text => {
                     /* Text before the first tag, we ignore it... */
                 }
 
@@ -133,21 +141,21 @@ impl<'a, R: Read> Deserializer<'a, R> {
         }
     }
 
-    /// Call given callback on the content of next `Text` event
-    fn with_next_text<'x: 'a, F: FnOnce(DeferredString) -> Result<O, DeserializeError>, O>(&'x mut self, f: F) -> Result<O, DeserializeError> {
+    /// Call given callback on the next `Text` event
+    fn with_next_text<'x: 'a, F: FnOnce(Event) -> Result<O, DeserializeError>, O>(&'x mut self, f: F) -> Result<O, DeserializeError> {
         let mut depth = 1;
         while depth > 0 {
             let event = self.parser.next()?;
-            match event {
-                Event::StartTag(_) => depth += 1,
-                Event::EndTag(_) | Event::EndTagImmediate => depth -= 1,
-                Event::AttributeName(_) | Event::AttributeValue(_) | Event::StartTagDone => { /*NOOP*/ },
-                Event::Text(value) => {
-                    let out = f(value);
+            match event.code() {
+                EventCode::StartTag => depth += 1,
+                EventCode::EndTag | EventCode::EndTagImmediate => depth -= 1,
+                EventCode::AttributeName | EventCode::AttributeValue => { /*NOOP*/ },
+                EventCode::Text => {
+                    let out = f(event);
                     self.parser.finish_tag(depth)?;
                     return out;
                 }
-                Event::Eof => break,
+                EventCode::Eof => break,
             }
         }
 
@@ -159,58 +167,57 @@ impl<'de: 'a, 'a, R: Read> serde::Deserializer<'de> for &'a mut Deserializer<'a,
     type Error = DeserializeError;
 
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        // TODO: Correct option?
         self.deserialize_string(visitor)
     }
 
     fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
         // TODO: Do we want to accept other strings in addition to "true" and "false"?
-        self.with_next_text(|t| visitor.visit_bool(t.to_str()?.parse()?))
+        self.with_next_text(|mut e| visitor.visit_bool(e.get_str()?.parse()?))
     }
 
     fn deserialize_i8<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.with_next_text(|t| visitor.visit_i8(btoi::btoi(t.to_bytes().as_ref())?))
+        self.with_next_text(|mut e| visitor.visit_i8(btoi::btoi(e.get_bytes()?)?))
     }
 
     fn deserialize_i16<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.with_next_text(|t| visitor.visit_i16(btoi::btoi(t.to_bytes().as_ref())?))
+        self.with_next_text(|mut e| visitor.visit_i16(btoi::btoi(e.get_bytes()?)?))
     }
 
     fn deserialize_i32<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.with_next_text(|t| visitor.visit_i32(btoi::btoi(t.to_bytes().as_ref())?))
+        self.with_next_text(|mut e| visitor.visit_i32(btoi::btoi(e.get_bytes()?)?))
     }
 
     fn deserialize_i64<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.with_next_text(|t| visitor.visit_i64(btoi::btoi(t.to_bytes().as_ref())?))
+        self.with_next_text(|mut e| visitor.visit_i64(btoi::btoi(e.get_bytes()?)?))
     }
 
     fn deserialize_u8<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.with_next_text(|t| visitor.visit_u8(btoi::btou(t.to_bytes().as_ref())?))
+        self.with_next_text(|mut e| visitor.visit_u8(btoi::btou(e.get_bytes()?)?))
     }
 
     fn deserialize_u16<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.with_next_text(|t| visitor.visit_u16(btoi::btou(t.to_bytes().as_ref())?))
+        self.with_next_text(|mut e| visitor.visit_u16(btoi::btou(e.get_bytes()?)?))
     }
 
     fn deserialize_u32<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.with_next_text(|t| visitor.visit_u32(btoi::btou(t.to_bytes().as_ref())?))
+        self.with_next_text(|mut e| visitor.visit_u32(btoi::btou(e.get_bytes()?)?))
     }
 
     fn deserialize_u64<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.with_next_text(|t| visitor.visit_u64(btoi::btou(t.to_bytes().as_ref())?))
+        self.with_next_text(|mut e| visitor.visit_u64(btoi::btou(e.get_bytes()?)?))
     }
 
     fn deserialize_f32<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.with_next_text(|t| visitor.visit_f32(t.to_str()?.parse()?))
+        self.with_next_text(|mut e| visitor.visit_f32(e.get_str()?.parse()?))
     }
 
     fn deserialize_f64<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.with_next_text(|t| visitor.visit_f64(t.to_str()?.parse()?))
+        self.with_next_text(|mut e| visitor.visit_f64(e.get_str()?.parse()?))
     }
 
     fn deserialize_char<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.with_next_text(|string| {
-            let string = string.to_str()?;
+        self.with_next_text(|mut e| {
+            let string = e.get_str()?;
             if string.len() == 1 {
                 visitor.visit_char(string.chars().next().unwrap()) // NOTE(unwrap): We know there is exactly one character.
             } else {
@@ -224,20 +231,14 @@ impl<'de: 'a, 'a, R: Read> serde::Deserializer<'de> for &'a mut Deserializer<'a,
     }
 
     fn deserialize_string<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.with_next_text(|text| {
-            match text.to_str()? {
-                Cow::Borrowed(str) => visitor.visit_str(str),
-                Cow::Owned(string) => visitor.visit_string(string),
-            }
+        self.with_next_text(|mut e| {
+            visitor.visit_str(e.get_str()?)
         })
     }
 
     fn deserialize_bytes<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.with_next_text(|text| {
-            match text.to_bytes() {
-                Cow::Borrowed(bytes) => visitor.visit_bytes(bytes),
-                Cow::Owned(vec) => visitor.visit_byte_buf(vec),
-            }
+        self.with_next_text(|mut event| {
+            visitor.visit_bytes(event.get_bytes()?)
         })
     }
 
@@ -288,16 +289,26 @@ impl<'de: 'a, 'a, R: Read> serde::Deserializer<'de> for &'a mut Deserializer<'a,
 
             fn next_key_seed<K: DeserializeSeed<'de>>(&mut self, seed: K) -> Result<Option<<K as DeserializeSeed<'de>>::Value>, Self::Error> {
                 loop {
-                    return match self.parser.next()? {
-                        Event::AttributeName(name) =>
-                            seed.deserialize(name.to_str()?.into_deserializer()).map(Some),
-                        Event::StartTag(name) => {
-                            let tag_name: InlinableString = name.try_into()?;
-                            let out = seed.deserialize(tag_name.into_deserializer()).map(Some);
-                            self.in_tag = Some(tag_name);
+                    let mut event = self.parser.peek()?;
+                    return match event.code() {
+                        EventCode::AttributeName => {
+                            let out = seed.deserialize(event.get_str()?.into_deserializer()).map(Some);
+                            let _ = self.parser.next(); // Consume the event (we know there is no error, if there was, we would get it in peek)
                             out
                         }
-                        Event::EndTag(_) | Event::EndTagImmediate => {
+                        EventCode::StartTag => {
+                            if self.only_attributes {
+                                return Ok(None);
+                            }
+
+                            let tag_name: InlinableString = event.get_str()?.into();
+                            let out = seed.deserialize(tag_name.into_deserializer()).map(Some);
+                            self.in_tag = Some(tag_name);
+                            let _ = self.parser.next(); // Consume the event (we know there is no error, if there was, we would get it in peek)
+                            out
+                        }
+                        EventCode::EndTag | EventCode::EndTagImmediate => {
+                            let _ = self.parser.next(); // Consume the event (we know there is no error, if there was, we would get it in peek)
                             if self.only_attributes {
                                 // This is mostly important for `EndTagImmediate`, we need to inform
                                 // `ElementEnterDeserialize` that while we did deserialize the tag,
@@ -307,15 +318,15 @@ impl<'de: 'a, 'a, R: Read> serde::Deserializer<'de> for &'a mut Deserializer<'a,
                                 Ok(None)
                             }
                         },
-                        Event::StartTagDone => {
+                        _ => {
                             if self.only_attributes {
                                 Ok(None)
                             } else {
+                                let _ = self.parser.next(); // Consume the event (we know there is no error, if there was, we would get it in peek)
                                 continue;
                             }
-                        }
-                        e => unreachable!("Parser should have never given us {:?} event in this place.", e),
-                    }
+                        },
+                    };
                 }
             }
 
@@ -328,10 +339,11 @@ impl<'de: 'a, 'a, R: Read> serde::Deserializer<'de> for &'a mut Deserializer<'a,
                     });
                 }
 
-                match self.parser.next()? {
-                    Event::AttributeValue(string) =>
+                let event = self.parser.next()?;
+                match event.code() {
+                    EventCode::AttributeValue =>
                         seed.deserialize(ParseDeserializer {
-                            string,
+                            value_event: event,
                         }),
                     e => unreachable!("Parser should have never given us {:?} event in this place.", e),
                 }
@@ -350,8 +362,6 @@ impl<'de: 'a, 'a, R: Read> serde::Deserializer<'de> for &'a mut Deserializer<'a,
     }
 
     fn deserialize_enum<V: Visitor<'de>>(self, _name: &'static str, _variants: &'static [&'static str], visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        //panic!("{:?}", self.parser.next());
-
         struct EnumAccess<'a, R: Read> {
             parser: &'a mut Parser<R>,
             opening_tag: InlinableString,
@@ -420,71 +430,68 @@ impl<'de: 'a, 'a, R: Read> serde::Deserializer<'de> for &'a mut Deserializer<'a,
     fn deserialize_ignored_any<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
         self.parser.finish_tag(1)?;
 
-        visitor.visit_unit() // ?
+        visitor.visit_unit()
     }
 }
 
 struct ParseDeserializer<'a> {
-    string: DeferredString<'a>,
+    value_event: Event<'a>,
 }
 
 impl<'de: 'a, 'a> serde::Deserializer<'de> for ParseDeserializer<'a> {
     type Error = DeserializeError;
 
-    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        match self.string.to_str()? {
-            Cow::Owned(string) => visitor.visit_string(string),
-            Cow::Borrowed(str) => visitor.visit_str(str),
-        }
+    fn deserialize_any<V: Visitor<'de>>(mut self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
+        visitor.visit_str(self.value_event.get_str()?)
     }
 
-    fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
+    fn deserialize_bool<V: Visitor<'de>>(mut self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
         // TODO: Do we want to accept other strings in addition to "true" and "false"?
-        visitor.visit_bool(self.string.to_str()?.parse()?)
+        visitor.visit_bool(self.value_event.get_str()?.parse()?)
     }
 
-    fn deserialize_i8<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_i8(btoi::btoi(self.string.to_bytes().as_ref())?)
+    fn deserialize_i8<V: Visitor<'de>>(mut self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
+        visitor.visit_i8(btoi::btoi(self.value_event.get_bytes()?)?)
     }
 
-    fn deserialize_i16<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_i16(btoi::btoi(self.string.to_bytes().as_ref())?)
+    fn deserialize_i16<V: Visitor<'de>>(mut self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
+        visitor.visit_i16(btoi::btoi(self.value_event.get_bytes()?)?)
     }
 
-    fn deserialize_i32<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_i32(btoi::btoi(self.string.to_bytes().as_ref())?)
+    fn deserialize_i32<V: Visitor<'de>>(mut self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
+        visitor.visit_i32(btoi::btoi(self.value_event.get_bytes()?)?)
     }
 
-    fn deserialize_i64<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_i64(btoi::btoi(self.string.to_bytes().as_ref())?)
+    fn deserialize_i64<V: Visitor<'de>>(mut self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
+        visitor.visit_i64(btoi::btoi(self.value_event.get_bytes()?)?)
     }
 
-    fn deserialize_u8<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_u8(btoi::btou(self.string.to_bytes().as_ref())?)
+    fn deserialize_u8<V: Visitor<'de>>(mut self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
+        visitor.visit_u8(btoi::btou(self.value_event.get_bytes()?)?)
     }
 
-    fn deserialize_u16<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_u16(btoi::btou(self.string.to_bytes().as_ref())?)
+    fn deserialize_u16<V: Visitor<'de>>(mut self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
+        visitor.visit_u16(btoi::btou(self.value_event.get_bytes()?)?)
     }
 
-    fn deserialize_u32<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_u32(btoi::btou(self.string.to_bytes().as_ref())?)
+    fn deserialize_u32<V: Visitor<'de>>(mut self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
+        visitor.visit_u32(btoi::btou(self.value_event.get_bytes()?)?)
     }
 
-    fn deserialize_u64<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_u64(btoi::btou(self.string.to_bytes().as_ref())?)
+    fn deserialize_u64<V: Visitor<'de>>(mut self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
+        visitor.visit_u64(btoi::btou(self.value_event.get_bytes()?)?)
     }
 
-    fn deserialize_f32<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_f32(self.string.to_str()?.parse()?)
+    fn deserialize_f32<V: Visitor<'de>>(mut self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
+        visitor.visit_f32(self.value_event.get_str()?.parse()?)
     }
 
-    fn deserialize_f64<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_f64(self.string.to_str()?.parse()?)
+    fn deserialize_f64<V: Visitor<'de>>(mut self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
+        visitor.visit_f64(self.value_event.get_str()?.parse()?)
     }
 
-    fn deserialize_char<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        let s = self.string.to_str()?;
+    fn deserialize_char<V: Visitor<'de>>(mut self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
+        let s = self.value_event.get_str()?;
         if s.len() == 1 {
             visitor.visit_char(s.chars().next().unwrap()) // NOTE(unwrap): We know there is exactly one character.
         } else {
@@ -492,23 +499,20 @@ impl<'de: 'a, 'a> serde::Deserializer<'de> for ParseDeserializer<'a> {
         }
     }
 
-    fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_str(self.string.to_str()?.as_ref())
+    fn deserialize_str<V: Visitor<'de>>(mut self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
+        visitor.visit_str(self.value_event.get_str()?)
     }
 
     fn deserialize_string<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        visitor.visit_string(self.string.to_str()?.into_owned())
+        self.deserialize_str(visitor)
     }
 
-    fn deserialize_bytes<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        match self.string.to_bytes() {
-            Cow::Owned(vec) => visitor.visit_byte_buf(vec),
-            Cow::Borrowed(bytes) => visitor.visit_bytes(bytes),
-        }
+    fn deserialize_bytes<V: Visitor<'de>>(mut self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
+        visitor.visit_bytes(self.value_event.get_bytes()?)
     }
 
     fn deserialize_byte_buf<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.deserialize_bytes(visitor) // TODO: Correct?
+        self.deserialize_bytes(visitor)
     }
 
     fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
@@ -525,7 +529,7 @@ impl<'de: 'a, 'a> serde::Deserializer<'de> for ParseDeserializer<'a> {
     }
 
     fn deserialize_ignored_any<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        self.deserialize_any(visitor) // TODO: Proper way?
+        visitor.visit_unit()
     }
 }
 
@@ -634,14 +638,15 @@ mod tests {
         });
     }
 
-    /*
     #[test]
     fn test_deserializer_enum() {
         #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
         enum MyEnum {
+            #[serde(rename = "variant-a")]
             VariantA {
                 t_string: String,
             },
+            #[serde(rename = "variant-b")]
             VariantB {
                 t_u32: u32,
             },
@@ -670,7 +675,7 @@ mod tests {
         assert_eq!(my_enum, MyEnum::VariantB {
             t_u32: 456,
         });
-    }*/
+    }
 
     #[test]
     fn test_proper() {
