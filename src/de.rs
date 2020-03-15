@@ -228,12 +228,17 @@ impl<'de: 'a, 'a, R: Read> serde::Deserializer<'de> for &'a mut Deserializer<'a,
         })
     }
 
-    fn deserialize_bytes<V: Visitor<'de>>(self, _visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        unimplemented!()
+    fn deserialize_bytes<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
+        self.with_next_text(|text| {
+            match text.to_bytes() {
+                Cow::Borrowed(bytes) => visitor.visit_bytes(bytes),
+                Cow::Owned(vec) => visitor.visit_byte_buf(vec),
+            }
+        })
     }
 
-    fn deserialize_byte_buf<V: Visitor<'de>>(self, _visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
-        unimplemented!()
+    fn deserialize_byte_buf<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
+        self.deserialize_bytes(visitor)
     }
 
     fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<<V as Visitor<'de>>::Value, Self::Error> {
