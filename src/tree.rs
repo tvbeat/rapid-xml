@@ -797,3 +797,57 @@ mod tests {
         assert!(des.next().is_none());
     }
 }
+
+#[cfg(test)]
+#[cfg(feature = "bencher")]
+mod bench {
+    use std::io::Cursor;
+    use test::{Bencher, black_box};
+
+    use serde_derive::Deserialize;
+
+    use super::*;
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+    pub enum Thing {
+        VariantA {
+            some_field: String,
+        },
+
+        VariantB {
+            some_field: String,
+            another_field: Option<u32>,
+            abcd_efgh: Option<u32>,
+            mumble_rumble: i16,
+            short: Option<String>,
+            field_with_long_name: Option<u32>,
+            xyz_qwerty: Option<u32>,
+        },
+
+        VariantC {
+            some_field: String,
+            field_1: u32,
+            field_2: i16,
+            field_3: u32,
+        },
+    }
+
+    const BENCH_XML: &[u8] = br#"<root><group>
+<VariantA some_field="TextAbcd"/>
+<VariantB some_field="TextAbcd"><another_field>80</another_field><abcd_efgh>4587</abcd_efgh><mumble_rumble>-8</mumble_rumble><short>AnotherText</short><field_with_long_name>79452</field_with_long_name></VariantB>
+<VariantC some_field="TextAbcd"><field_1>123</field_1><field_2>-3</field_2><field_3>567</field_3></VariantC>
+</group></root>"#;
+
+    #[bench]
+    fn bench_tree_deserializer(b: &mut Bencher) {
+        let xml = BENCH_XML.repeat(10000);
+
+        b.iter(move || {
+            let path = xml_path!("root", "group", * => Thing);
+            let mut des = TreeDeserializer::from_path_and_reader(path, Cursor::new(&xml));
+            while let Some(item) = des.next() {
+                black_box(item.unwrap());
+            }
+        });
+    }
+}
