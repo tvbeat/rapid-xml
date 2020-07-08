@@ -298,7 +298,19 @@ impl<T: DeserializeOwned + Clone, M: TagMatcher, N: XmlPath> XmlPath for Element
                     if self.tag_matcher.matches(&tag_name) {
                         let opening_tag = tag_name.as_ref().into();
                         let mut des = Deserializer::new_inside_tag(parser, opening_tag, true);
-                        self.entered = Some(try_some!(T::deserialize(&mut des)));
+                        match T::deserialize(&mut des) {
+                            Ok(value) => {
+                                self.entered = Some(value);
+                            }
+                            Err(DeserializeError::UnexpectedEndTag) => {
+                                // This is fine, we deserialized the `T` successfully but then there
+                                // are no child tags to enter, so we continue to next sibling tag or
+                                // end of this container.
+                            }
+                            Err(err) => {
+                                return Some(Err(err));
+                            }
+                        }
                     } else {
                         try_some!(parser.finish_tag(1));
                     }
@@ -659,6 +671,10 @@ mod tests {
                     <xxx>Unknown tag</xxx>
                 </aaa>
                 <xxx>Unknown tag</xxx>
+                <aaa>
+                    <bbb n="99"/>
+                </aaa>
+                <aaa/>
                 <aaa>
                     <bbb n="99">Matched tag without anything nested</bbb>
                     <bbb n="2">

@@ -38,6 +38,9 @@ pub enum DeserializeError {
     /// Deserializer was expecting text, but found none
     ExpectedText,
 
+    /// Deserializer was not expecting end tag, but it came
+    UnexpectedEndTag,
+
     /// Custom error from Serde
     Custom(String),
 }
@@ -53,6 +56,7 @@ impl Display for DeserializeError {
             DeserializeError::UnexpectedEof => write!(f, "Unexpected EOF."),
             DeserializeError::ExpectedElement => write!(f, "Expected element, but found something else."),
             DeserializeError::ExpectedText => write!(f, "Expected text, but found none."),
+            DeserializeError::UnexpectedEndTag => write!(f, "Unexpected end tag."),
             DeserializeError::Custom(string) => write!(f, "{}", string),
         }
     }
@@ -293,7 +297,16 @@ impl<'de: 'a, 'a, R: Read> serde::Deserializer<'de> for &'a mut Deserializer<'a,
                             self.in_tag = Some(tag_name);
                             out
                         }
-                        Event::EndTag(_) | Event::EndTagImmediate => Ok(None),
+                        Event::EndTag(_) | Event::EndTagImmediate => {
+                            if self.only_attributes {
+                                // This is mostly important for `EndTagImmediate`, we need to inform
+                                // `ElementEnterDeserialize` that while we did deserialize the tag,
+                                // it has nowhere to enter!
+                                Err(DeserializeError::UnexpectedEndTag)
+                            } else {
+                                Ok(None)
+                            }
+                        },
                         Event::StartTagDone => {
                             if self.only_attributes {
                                 Ok(None)
