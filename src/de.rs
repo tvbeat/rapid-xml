@@ -159,7 +159,7 @@ impl<'a, R: Read> Deserializer<'a, R> {
             }
         }
 
-        return Err(DeserializeError::ExpectedText);
+        Err(DeserializeError::ExpectedText)
     }
 }
 
@@ -221,7 +221,7 @@ impl<'de: 'a, 'a, R: Read> serde::Deserializer<'de> for &'a mut Deserializer<'a,
             if string.len() == 1 {
                 visitor.visit_char(string.chars().next().unwrap()) // NOTE(unwrap): We know there is exactly one character.
             } else {
-                return Err(DeserializeError::NotOneCharacter);
+                Err(DeserializeError::NotOneCharacter)
             }
         })
     }
