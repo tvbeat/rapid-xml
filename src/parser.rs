@@ -1092,8 +1092,66 @@ impl<'a> Event<'a> {
     }
 
     #[cold]
-    fn decode_escapes(&mut self) -> Result<&[u8], DecodeError> {
-        todo!("Handling of XML escapes!");
+    fn decode_escapes(&mut self) -> Result<(), DecodeError> {
+        fn find_next_escape(slice: &[u8], from: usize) -> Option<(usize, usize, char)> {
+            let start = slice[from..].iter().position(|c| *c == b'&')? + from;
+            let end = slice[start..].iter().position(|c| *c == b';')? + start;
+
+            match &slice[start+1..end] {
+                b"lt"   => Some((start, end, '<')),
+                b"gt"   => Some((start, end, '>')),
+                b"amp"  => Some((start, end, '&')),
+                b"apos" => Some((start, end, '\'')),
+                b"quot" => Some((start, end, '"')),
+
+                [b'#', b'x', hexa @ ..] => {
+                    let c = std::char::from_u32(btoi::btou_radix(hexa, 16).ok()?)?;
+                    Some((start, end, c))
+                },
+
+                [b'#', decimal @ ..] => {
+                    let c = std::char::from_u32(btoi::btou(decimal).ok()?)?;
+                    Some((start, end, c))
+                },
+
+                _ => None,
+            }
+        }
+
+        let mut escape = match find_next_escape(&self.slice, 0) {
+            Some(escape) => escape,
+            None => return Ok(()),
+        };
+        let mut current_end = escape.0;
+
+        loop {
+            let next_escape = find_next_escape(&self.slice, escape.1);
+            let next_escape_end = next_escape.map(|n| n.0).unwrap_or(self.slice.len());
+
+            let utf8_len = escape.2.encode_utf8(&mut self.slice[current_end..]).len();
+            debug_assert!(utf8_len <= escape.1 - escape.0, "We got XML escape that is shorter than its UTF-8 representation. That should not be possible.");
+            current_end += utf8_len;
+
+            self.slice.copy_within((escape.1 + 1)..next_escape_end, current_end);
+            current_end += next_escape_end - escape.1 - 1;
+
+            match next_escape {
+                Some(next_escape) => {
+                    escape = next_escape;
+                }
+                None => {
+                    // XXX: We just want to do `self.slice = &mut self.slice[..current_end];`, but borrowchecker doesn't like that for some reason.
+                    let mut tmp = &mut [][..];
+                    std::mem::swap(&mut tmp, &mut self.slice);
+                    tmp = &mut tmp[..current_end];
+                    std::mem::swap(&mut tmp, &mut self.slice);
+
+                    break;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     #[inline(always)]
@@ -1108,14 +1166,14 @@ impl<'a> Event<'a> {
 
     #[inline(always)]
     pub fn get_str(&mut self) -> Result<&str, DecodeError> {
-        if self.code & BIT_HAS_UTF8 != 0 {
-            self.check_utf8()?;
-            self.code &= !BIT_HAS_UTF8;
-        }
-
         if self.code & BIT_HAS_ESCAPES != 0 {
             self.decode_escapes()?;
             self.code &= !BIT_HAS_ESCAPES;
+        }
+
+        if self.code & BIT_HAS_UTF8 != 0 {
+            self.check_utf8()?;
+            self.code &= !BIT_HAS_UTF8;
         }
 
         // Safety: We know that it either has no Utf-8 characters (BIT_HAS_UTF8 is not set) or it
@@ -1514,6 +1572,59 @@ mod tests {
 
             event_eq(parser.next().unwrap(), EventCode::StartTag, Some("aaa"));
             event_eq(parser.next().unwrap(), EventCode::Text, Some(&text));
+            event_eq(parser.next().unwrap(), EventCode::EndTag, Some("aaa"));
+        }
+    }
+
+    #[test]
+    fn test_escapes() {
+        let table = [
+            // Escapes alone
+            ("&lt;", "<"),
+            ("&gt;", ">"),
+            ("&amp;", "&"),
+            ("&apos;", "'"),
+            ("&quot;", "\""),
+            ("&#65;", "A"),
+            ("&#x41;", "A"),
+            ("&#128163;", "💣"),
+            ("&#x1F4A3;", "💣"),
+
+            // Escapes surrounded by text
+            ("xyz&lt;xyz", "xyz<xyz"),
+            ("xyz&gt;xyz", "xyz>xyz"),
+            ("xyz&amp;xyz", "xyz&xyz"),
+            ("xyz&apos;xyz", "xyz'xyz"),
+            ("xyz&quot;xyz", "xyz\"xyz"),
+            ("xyz&#65;xyz", "xyzAxyz"),
+            ("xyz&#x41;xyz", "xyzAxyz"),
+            ("xyz&#128163;xyz", "xyz💣xyz"),
+            ("xyz&#x1F4A3;xyz", "xyz💣xyz"),
+
+            // Multiple escapes in text
+            ("&lt;&apos;&#128163;&gt;", "<'💣>"),
+            ("x&lt;x&apos;x&#128163;x&gt;x", "x<x'x💣x>x"),
+            ("xy&lt;xy&apos;xy&#128163;xy&gt;xy", "xy<xy'xy💣xy>xy"),
+            ("xyz&lt;xyz&apos;xyz&#128163;xyz&gt;xyz", "xyz<xyz'xyz💣xyz>xyz"),
+
+            // Escapes and UTF-8 combined
+            ("ěšč&#128163;řžý", "ěšč💣řžý"),
+
+            // Invalid escapes
+            ("xyz&unknown;xyz", "xyz&unknown;xyz"),
+            ("xyz&#abcd;xyz", "xyz&#abcd;xyz"),
+            ("xyz&#xghi;xyz", "xyz&#xghi;xyz"),
+            ("xyz&ampxyz", "xyz&ampxyz"),
+            ("xyz&#64xyz", "xyz&#64xyz"),
+        ];
+
+        for (input, output) in &table {
+            let xml = format!("<aaa>{}</aaa>", input);
+
+            let mut parser = Parser::new(Cursor::new(xml));
+
+            event_eq(parser.next().unwrap(), EventCode::StartTag, Some("aaa"));
+            event_eq(parser.next().unwrap(), EventCode::Text, Some(&output));
             event_eq(parser.next().unwrap(), EventCode::EndTag, Some("aaa"));
         }
     }
