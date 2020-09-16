@@ -24,7 +24,9 @@ serde_derive = "1.0.116"
 # Enable this feature to enable benchmarks using the (currently) unstable
 # test::Bencher.
 bencher = []
+build_dfa = []
 
 [[bin]]
 path = "src/build_dfa.rs"
 name = "build_dfa"
+required-features = ["build_dfa"]
