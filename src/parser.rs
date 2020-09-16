@@ -3,7 +3,6 @@
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
 use std::collections::VecDeque;
-use std::convert::TryFrom;
 use std::fmt::Display;
 use std::intrinsics::transmute;
 use std::io::Read;
@@ -275,8 +274,8 @@ unsafe fn classify_ssse3(input: &[u8], chars: &mut Vec<u8>, positions: &mut Vec<
             // Reserve enough space in case the whole block was filled with control characters
             chars.reserve(BLOCK_SIZE); // Max amount of control characters we may find.
             positions.reserve(BLOCK_SIZE); // Max amount of control characters we may find.
-            let mut chars_ptr = chars.as_mut_ptr().offset(chars.len() as isize);
-            let mut positions_ptr = positions.as_mut_ptr().offset(positions.len() as isize);
+            let mut chars_ptr = chars.as_mut_ptr().add(chars.len());
+            let mut positions_ptr = positions.as_mut_ptr().add(positions.len());
 
             // Write them out.
             loop {
@@ -310,7 +309,7 @@ unsafe fn classify_ssse3(input: &[u8], chars: &mut Vec<u8>, positions: &mut Vec<
             positions.set_len(positions.len() + count);
         }
 
-        ptr = ptr.offset(BLOCK_SIZE as isize);
+        ptr = ptr.add(BLOCK_SIZE);
         offset += BLOCK_SIZE;
     }
 }
@@ -520,8 +519,8 @@ unsafe fn classify_avx2(input: &[u8], chars: &mut Vec<u8>, positions: &mut Vec<u
 
             chars.reserve(BLOCK_SIZE); // Max amount of control characters we may find.
             positions.reserve(BLOCK_SIZE); // Max amount of control characters we may find.
-            let mut chars_ptr = chars.as_mut_ptr().offset(chars.len() as isize);
-            let mut positions_ptr = positions.as_mut_ptr().offset(positions.len() as isize);
+            let mut chars_ptr = chars.as_mut_ptr().add(chars.len());
+            let mut positions_ptr = positions.as_mut_ptr().add(positions.len());
 
             loop {
                 // TODO: Verify that this is unrolled
@@ -549,7 +548,7 @@ unsafe fn classify_avx2(input: &[u8], chars: &mut Vec<u8>, positions: &mut Vec<u
             positions.set_len(positions.len() + count);
         }
 
-        ptr = ptr.offset(BLOCK_SIZE as isize);
+        ptr = ptr.add(BLOCK_SIZE);
         offset += BLOCK_SIZE;
     }
 }
@@ -606,21 +605,34 @@ const BIT_HAS_UTF8: u8 =    0b1000_0000;
 // The same bit is set in the code of ampersand.
 const BIT_HAS_ESCAPES: u8 = 0b0100_0000;
 
+/// Represents the type of the `Event`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum EventCode {
     // 0 is never reported as enum EventCode, but it is used in u8 representation to report error.
 
+    /// Start of an opening tag which may or may not have attributes and may be immediately closed.
+    /// Corresponds to the `<abcd` part. The contained string is `abcd`.
     StartTag =        0o1,
 
+    /// Closing tag. Corresponds to the `</abcd>` part. The contained string is `abcd`.
     EndTag =          0o2,
+
+    /// Immediately closed tag. Corresponds to the `/>` part. Never contains any string.
     EndTagImmediate = 0o3,
 
+    /// Text between tags.
     Text =            0o4,
 
+    /// Name of an attribute - the part before `=`. In well-formed XML, it is always followed by
+    /// `AttributeValue`. The contained string is the attribute name.
     AttributeName =   0o5,
+
+    /// Value of an attribute - the part after `=`. In well-formed XML, it is always preceeded by
+    /// `AttributeName`. The contained string is the attribute value.
     AttributeValue =  0o6,
 
+    /// End of file. Never contains any string.
     Eof =             0o7,
 }
 
@@ -704,7 +716,7 @@ struct StateMachine<'e, 'state> {
 }
 
 impl<'e, 'state> StateMachine<'e, 'state> {
-    fn run(&mut self, chars: &Vec<u8>, positions: &Vec<usize>, buffer: &[u8]) {
+    fn run(&mut self, chars: &[u8], positions: &[usize], buffer: &[u8]) {
         // If we were inside exception handler when we ended last time, we must continue with it.
         if self.state.state as u8 > State::HandledException as u8 {
             self.continue_exception(buffer);
@@ -769,7 +781,10 @@ impl<'e, 'state> StateMachine<'e, 'state> {
 
             s.state = match transition & 0b0001_1111 {
                 #[cfg(debug_assertions)]
-                state_num => State::try_from(state_num).unwrap(),
+                state_num => {
+                    use std::convert::TryFrom;
+                    State::try_from(state_num).unwrap()
+                },
 
                 #[cfg(not(debug_assertions))]
                 state_num => unsafe { std::mem::transmute::<u8, State>(state_num) },
@@ -931,23 +946,6 @@ impl<'e, 'state> StateMachine<'e, 'state> {
 /// The kind of XML malformation that was encountered
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MalformedXMLKind {
-/*
-    /// Tag name contained invalid characters
-    BadTagName,
-
-    /// Attribute name contained invalid characters
-    BadAttributeName,
-
-    /// Attribute value contained invalid characters or was not properly quoted
-    BadAttributeValue,
-
-    /// Closing tag contained attributes or other extra character
-    ExtrasInClosingTag,
-
-    /// The character '<' outside of beginning of a tag was not escaped (e.g. in string)
-    UnescapedLessThan,
-*/
-
     /// EOF before the XML structure was properly terminated
     UnexpectedEof,
 
@@ -955,6 +953,7 @@ pub enum MalformedXMLKind {
     Other,
 }
 
+/// XML was not well-formed (syntax error)
 #[derive(Clone, Debug)]
 pub struct MalformedXmlError {
     /// Kind of malformation
@@ -970,11 +969,6 @@ impl std::fmt::Display for MalformedXmlError {
 
         if self.kind != MalformedXMLKind::Other {
             let msg = match self.kind {
-                /*MalformedXMLKind::BadTagName => "bad tag name",
-                MalformedXMLKind::BadAttributeName => "bad attribute name",
-                MalformedXMLKind::BadAttributeValue => "bad value name",
-                MalformedXMLKind::ExtrasInClosingTag => "extra things in closing tag",
-                MalformedXMLKind::UnescapedLessThan => "unescaped '<' character",*/
                 MalformedXMLKind::UnexpectedEof => "unexpected EOF",
                 MalformedXMLKind::Other => "",
             };
@@ -1025,9 +1019,13 @@ impl From<MalformedXmlError> for ParseError {
     }
 }
 
+/// Represents error from decoding textual value
 #[derive(Debug)]
 pub enum DecodeError {
+    /// The XML contained byte sequence that was not valid UTF-8
     BadUtf8,
+
+    /// The XML contained escape sequence (&...;) that was not valid.
     BadEscape,
 }
 
@@ -1055,6 +1053,7 @@ struct InternalEvent {
     code: u8,
 }
 
+/// Event represents a part of a XML document.
 #[derive(Debug)]
 pub struct Event<'a> {
     slice: &'a mut [u8],
@@ -1077,6 +1076,7 @@ impl<'a> Event<'a> {
         }
     }
 
+    /// Get the code of the event
     #[inline(always)]
     pub fn code(&self) -> EventCode {
         // Safety: We take only last 3 bits and we know that every combination of them is a valid
@@ -1154,6 +1154,7 @@ impl<'a> Event<'a> {
         Ok(())
     }
 
+    /// Get the event value as bytes
     #[inline(always)]
     pub fn get_bytes(&mut self) -> Result<&[u8], DecodeError> {
         if self.code & BIT_HAS_ESCAPES != 0 {
@@ -1164,6 +1165,7 @@ impl<'a> Event<'a> {
         Ok(self.slice)
     }
 
+    /// Get the event value as string
     #[inline(always)]
     pub fn get_str(&mut self) -> Result<&str, DecodeError> {
         if self.code & BIT_HAS_ESCAPES != 0 {

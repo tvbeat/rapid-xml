@@ -245,7 +245,6 @@ impl<M: TagMatcher, N: XmlPath> XmlPath for ElementEnter<M, N> {
     fn go<R: Read>(&mut self, parser: &mut Parser<R>) -> Option<Result<Self::Output, DeserializeError>> {
         loop {
             if self.entered {
-                //eprintln!("ElementEnter {:?}: Already entered, calling next.", self as *const ElementEnter<M, N>);
                 if let Some(out) = self.next.go(parser) {
                     return Some(out);
                 }
@@ -253,12 +252,10 @@ impl<M: TagMatcher, N: XmlPath> XmlPath for ElementEnter<M, N> {
             self.entered = false;
 
             let mut event = try_some!(parser.next());
-            //eprintln!("ElementEnter {:?}: Got event {:?}...", self as *const ElementEnter<M, N>, event);
             match event.code() {
                 EventCode::StartTag => {
                     let tag_name = try_some!(event.get_str());
                     if self.tag_matcher.matches(tag_name.as_ref()) {
-                        //eprintln!("{:?}: Matched! Will enter.", self as *const ElementEnter<M, N>);
                         self.entered = true;
                     } else {
                         try_some!(parser.finish_tag(1));
@@ -281,7 +278,6 @@ impl<T: DeserializeOwned + Clone, M: TagMatcher, N: XmlPath> XmlPath for Element
     fn go<R: Read>(&mut self, parser: &mut Parser<R>) -> Option<Result<Self::Output, DeserializeError>> {
         loop {
             if let Some(entered) = &self.entered {
-                //eprintln!("ElementEnterDeserialize {:?}: Already entered, calling next.", self as *const ElementEnterDeserialize<T, M, N>);
                 if let Some(out) = self.next.go(parser) {
                     return match out {
                         Ok(out) => {
@@ -297,7 +293,6 @@ impl<T: DeserializeOwned + Clone, M: TagMatcher, N: XmlPath> XmlPath for Element
             self.entered = None;
 
             let mut event = try_some!(parser.next());
-            //eprintln!("ElementEnterDeserialize {:?}: Got event {:?}...", self as *const ElementEnterDeserialize<T, M, N>, event);
             match event.code() {
                 EventCode::StartTag => {
                     let tag_name = try_some!(event.get_str());
@@ -339,10 +334,8 @@ impl<T: DeserializeOwned, M: TagMatcher> XmlPath for ElementDeserialize<T, M> {
     fn go<R: Read>(&mut self, parser: &mut Parser<R>) -> Option<Result<Self::Output, DeserializeError>> {
         loop {
             let mut event = try_some!(parser.next());
-            //eprintln!("ElementDeserialize {:?}: Got event {:?}", self as *const ElementDeserialize<T, M>, event);
             match event.code() {
                 EventCode::StartTag => {
-                    //eprintln!("ElementDeserialize {:?}: Got start tag, will deserialize", self as *const ElementDeserialize<T, M>);
                     let tag_name = try_some!(event.get_str());
                     if self.tag_matcher.matches(tag_name.as_ref()) {
                         let opening_tag = tag_name.into();
@@ -351,7 +344,6 @@ impl<T: DeserializeOwned, M: TagMatcher> XmlPath for ElementDeserialize<T, M> {
                     }
                 },
                 EventCode::EndTagImmediate | EventCode::EndTag => {
-                    //eprintln!("ElementDeserialize {:?}: Got end tag (immediate), will return up", self as *const ElementDeserialize<T, M>);
                     return None;
                 },
                 EventCode::Eof => {
@@ -375,7 +367,6 @@ impl<T: DeserializeOwned, M: TagMatcher> XmlPath for ElementDeserialize<T, M> {
 pub struct TreeDeserializer<R: Read, N> {
     parser: Parser<R>,
     path: N,
-    last_error_at: usize,
 }
 
 /// Type alias that helps to get the output type of TreeDeserializer
@@ -387,7 +378,6 @@ impl<R: Read, N: XmlPath> TreeDeserializer<R, N> {
         Self {
             parser,
             path,
-            last_error_at: std::usize::MAX,
         }
     }
 
@@ -403,7 +393,6 @@ impl<R: Read, N: XmlPath + Default> TreeDeserializer<R, N> {
         Self {
             parser,
             path: N::default(),
-            last_error_at: std::usize::MAX,
         }
     }
 
