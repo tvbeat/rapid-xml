@@ -9,6 +9,12 @@ homepage = "https://github.com/tvbeat/rapid-xml"
 repository = "https://github.com/tvbeat/rapid-xml"
 keywords = ["xml", "parser", "serde"]
 categories = ["parser-implementations"]
+include = [
+    "**/*.rs",
+    "Cargo.toml",
+    "README.md",
+    "CHANGELOG.md",
+]
 
 [dependencies]
 btoi = "0.4.2"
