@@ -316,11 +316,8 @@ impl<T: DeserializeOwned + Clone, M: TagMatcher, N: XmlPath> XmlPath for Element
                         try_some!(parser.finish_tag(1));
                     }
                 },
-                EventCode::EndTagImmediate | EventCode::EndTag => {
+                EventCode::EndTagImmediate | EventCode::EndTag | EventCode::Eof => {
                     return None;
-                },
-                EventCode::Eof => {
-                    return Some(Err(DeserializeError::UnexpectedEof));
                 },
                 EventCode::AttributeName | EventCode::AttributeValue | EventCode::Text => {}
             }
@@ -640,6 +637,11 @@ mod tests {
     use super::*;
 
     #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+    struct Root {
+        xyz: u32,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
     struct Bbb {
         n: u32,
     }
@@ -650,7 +652,7 @@ mod tests {
     }
 
     const SAMPLE_XML: &[u8] = br#"
-            <root>
+            <root xyz="42">
                 <aaa>
                     <bbb n="1">
                         <ccc m="100"/>
@@ -679,7 +681,7 @@ mod tests {
         "#;
 
     const SAMPLE_XML_ERRORS: &[u8] = br#"
-            <root>
+            <root xyz="42">
                 <aaa>
                     <bbb n="1">
                         <ccc m="100"/>
@@ -783,6 +785,19 @@ mod tests {
         assert!(des.next().unwrap().is_err()); // Bad attribute value
         assert_eq!(des.next().unwrap().unwrap(), (Bbb { n: 2 }, Ccc { m: 300 }));
         assert!(des.next().unwrap().is_err());
+        assert!(des.next().is_none());
+    }
+
+    #[test]
+    fn parse_root() {
+        let path = xml_path!("root" => Root, "aaa", "bbb", "ccc" => Ccc);
+
+        let mut des = TreeDeserializer::from_path_and_reader(path, Cursor::new(&SAMPLE_XML[..]));
+
+        assert_eq!(des.next().unwrap().unwrap(), (Root { xyz: 42, }, Ccc { m: 100 }));
+        assert_eq!(des.next().unwrap().unwrap(), (Root { xyz: 42, }, Ccc { m: 200 }));
+        assert_eq!(des.next().unwrap().unwrap(), (Root { xyz: 42, }, Ccc { m: 300 }));
+        assert_eq!(des.next().unwrap().unwrap(), (Root { xyz: 42, }, Ccc { m: 400 }));
         assert!(des.next().is_none());
     }
 }
