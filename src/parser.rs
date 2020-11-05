@@ -682,8 +682,9 @@ enum State {
 
     HandledException = 0o100,
     InProcessingInstruction = 0o101,
-    InComment = 0o102,
-    InCDATA = 0o103,
+    InCommentOrCDATA = 0o102,
+    InComment = 0o103,
+    InCDATA = 0o104,
 }
 
 #[derive(Clone, Debug)]
@@ -803,11 +804,12 @@ impl<'e, 'state> StateMachine<'e, 'state> {
             (State::TagStart, b'?') =>
                 self.handle_processing_instruction(pos, buffer),
 
-            (State::TagStart, b'!') if buffer[pos..].starts_with(b"!--") =>
-                self.handle_comment(pos, buffer),
-
-            (State::TagStart, b'!') if buffer[pos..].starts_with(b"![CDATA[") =>
-                self.handle_cdata(pos, buffer),
+            (State::TagStart, b'!') =>
+                // Note that it looks like we could inspect the `buffer` to see whether this is
+                // a comment or CDATA and in most cases it is true, but not always... If the "<!"
+                // is right at the end of the buffer, we don't know. The recognition of comment vs
+                // CDATA must happen in handler that can be restarted once more data arrive.
+                self.handle_comment_or_cdata(pos, buffer),
 
             _ =>
                 self.handle_error(pos, buffer),
@@ -819,6 +821,9 @@ impl<'e, 'state> StateMachine<'e, 'state> {
         match self.state.state {
             State::InProcessingInstruction =>
                 self.continue_processing_instruction(buffer),
+
+            State::InCommentOrCDATA =>
+                self.continue_comment_or_cdata(buffer),
 
             State::InComment =>
                 self.continue_comment(buffer),
@@ -856,11 +861,39 @@ impl<'e, 'state> StateMachine<'e, 'state> {
         }
     }
 
-    fn handle_comment(&mut self, pos: usize, buffer: &[u8]) {
-        self.state.start_position = pos + 2;
-        self.state.state = State::InComment;
+    fn handle_comment_or_cdata(&mut self, pos: usize, buffer: &[u8]) {
+        self.state.start_position = pos + 1;
+        self.state.state = State::InCommentOrCDATA;
 
-        self.continue_comment(buffer);
+        self.continue_comment_or_cdata(buffer);
+    }
+
+    fn continue_comment_or_cdata(&mut self, buffer: &[u8]) {
+        debug_assert_eq!(self.state.state, State::InCommentOrCDATA);
+        let pos = self.state.start_position;
+
+        let buffer_slice = &buffer[pos..];
+
+        if buffer_slice.starts_with(b"--") {
+            self.state.start_position = pos + 2;
+            self.state.state = State::InComment;
+            return self.continue_comment(buffer);
+        }
+
+        if buffer_slice.starts_with(b"[CDATA[") {
+            self.state.start_position = pos + 7;
+            self.state.state = State::InCDATA;
+            return self.continue_cdata(buffer);
+        }
+
+        if buffer_slice.len() < 2 && b"--".starts_with(buffer_slice) {
+            // It could be a comment, but we need more data...
+        } else if buffer_slice.len() < 7 && b"[CDATA[".starts_with(buffer_slice) {
+            // It could be a CDATA, we need more data...
+        } else {
+            // We can already tell that it is not comment nor cdata
+            self.handle_error(pos, buffer);
+        }
     }
 
     fn continue_comment(&mut self, buffer: &[u8]) {
@@ -879,17 +912,6 @@ impl<'e, 'state> StateMachine<'e, 'state> {
         } else {
             // The state will remain State::InComment, so once we have new longer buffer, we will be called again.
         }
-    }
-
-    fn handle_cdata(&mut self, pos: usize, buffer: &[u8]) {
-        // TODO: Any specialities we should care about in CDATA?
-
-        if self.state.state != State::InCDATA {
-            self.state.start_position = pos + 8;
-            self.state.state = State::InCDATA;
-        };
-
-        self.continue_cdata(buffer);
     }
 
     fn continue_cdata(&mut self, buffer: &[u8]) {
@@ -1547,6 +1569,21 @@ mod tests {
         }
     }
 
+    // Tests that exception handler works correctly when the start of the exceptional area is split
+    // by buffer reads
+    #[test]
+    fn test_parser_split_processing_instruction() {
+        for padding_len in (READ_SIZE*2-200)..(READ_SIZE*2+200) {
+            let padding = " ".repeat(padding_len);
+            let xml = format!("{}<aaa><? abcdef ?></aaa>", padding);
+
+            let mut parser = Parser::new(Cursor::new(xml));
+
+            event_eq(parser.next().unwrap(), EventCode::StartTag, Some("aaa"));
+            event_eq(parser.next().unwrap(), EventCode::EndTag, Some("aaa"));
+        }
+    }
+
     // Tests that exception handler works correctly across multiple buffer reads
     #[test]
     fn test_parser_long_comment() {
@@ -1554,6 +1591,21 @@ mod tests {
             let padding = " ".repeat(padding_len);
             let text = "abcdef".repeat(100_000);
             let xml = format!("{}<aaa><!-- {} --></aaa>", padding, text);
+
+            let mut parser = Parser::new(Cursor::new(xml));
+
+            event_eq(parser.next().unwrap(), EventCode::StartTag, Some("aaa"));
+            event_eq(parser.next().unwrap(), EventCode::EndTag, Some("aaa"));
+        }
+    }
+
+    // Tests that exception handler works correctly when the start of the exceptional area is split
+    // by buffer reads
+    #[test]
+    fn test_parser_split_comment() {
+        for padding_len in (READ_SIZE*2-200)..(READ_SIZE*2+200) {
+            let padding = " ".repeat(padding_len);
+            let xml = format!("{}<aaa><!-- abcdef --></aaa>", padding);
 
             let mut parser = Parser::new(Cursor::new(xml));
 
@@ -1574,6 +1626,22 @@ mod tests {
 
             event_eq(parser.next().unwrap(), EventCode::StartTag, Some("aaa"));
             event_eq(parser.next().unwrap(), EventCode::Text, Some(&text));
+            event_eq(parser.next().unwrap(), EventCode::EndTag, Some("aaa"));
+        }
+    }
+
+    // Tests that exception handler works correctly when the start of the exceptional area is split
+    // by buffer reads
+    #[test]
+    fn test_parser_split_cdata() {
+        for padding_len in (READ_SIZE*2-200)..(READ_SIZE*2+200) {
+            let padding = " ".repeat(padding_len);
+            let xml = format!("{}<aaa><![CDATA[abcdef]]></aaa>", padding);
+
+            let mut parser = Parser::new(Cursor::new(xml));
+
+            event_eq(parser.next().unwrap(), EventCode::StartTag, Some("aaa"));
+            event_eq(parser.next().unwrap(), EventCode::Text, Some("abcdef"));
             event_eq(parser.next().unwrap(), EventCode::EndTag, Some("aaa"));
         }
     }
