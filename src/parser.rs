@@ -1357,7 +1357,7 @@ impl<R: Read> Parser<R> {
     pub fn next(&mut self) -> Result<Event, ParseError> {
         while self.events.is_empty() {
             if self.reached_eof {
-                return Ok(Event::eof());
+                return self.eof_transition();
             }
             self.parse_more()?;
         }
@@ -1392,6 +1392,18 @@ impl<R: Read> Parser<R> {
         }
 
         Ok(())
+    }
+
+    fn eof_transition(&mut self) -> Result<Event, ParseError> {
+        match self.state.state {
+            // TODO: We may want to emit the last text as actual text event instead.
+            State::Outside | State::InText => Ok(Event::eof()),
+
+            _ => Err(ParseError::MalformedXML(MalformedXmlError {
+                kind: MalformedXMLKind::UnexpectedEof,
+                context: None,
+            })),
+        }
     }
 }
 
@@ -1535,6 +1547,7 @@ mod tests {
             event_eq(parser.next().unwrap(), EventCode::EndTagImmediate, None);
         }
         event_eq(parser.next().unwrap(), EventCode::EndTag, Some("aaa"));
+        event_eq(parser.next().unwrap(), EventCode::Eof, None);
     }
 
     // Tests that the buffer will grow to contain the whole text until the state machine reports
@@ -1551,6 +1564,7 @@ mod tests {
             event_eq(parser.next().unwrap(), EventCode::StartTag, Some("aaa"));
             event_eq(parser.next().unwrap(), EventCode::Text, Some(&text));
             event_eq(parser.next().unwrap(), EventCode::EndTag, Some("aaa"));
+            event_eq(parser.next().unwrap(), EventCode::Eof, None);
         }
     }
 
@@ -1566,6 +1580,7 @@ mod tests {
 
             event_eq(parser.next().unwrap(), EventCode::StartTag, Some("aaa"));
             event_eq(parser.next().unwrap(), EventCode::EndTag, Some("aaa"));
+            event_eq(parser.next().unwrap(), EventCode::Eof, None);
         }
     }
 
@@ -1581,6 +1596,7 @@ mod tests {
 
             event_eq(parser.next().unwrap(), EventCode::StartTag, Some("aaa"));
             event_eq(parser.next().unwrap(), EventCode::EndTag, Some("aaa"));
+            event_eq(parser.next().unwrap(), EventCode::Eof, None);
         }
     }
 
@@ -1596,6 +1612,7 @@ mod tests {
 
             event_eq(parser.next().unwrap(), EventCode::StartTag, Some("aaa"));
             event_eq(parser.next().unwrap(), EventCode::EndTag, Some("aaa"));
+            event_eq(parser.next().unwrap(), EventCode::Eof, None);
         }
     }
 
@@ -1611,6 +1628,7 @@ mod tests {
 
             event_eq(parser.next().unwrap(), EventCode::StartTag, Some("aaa"));
             event_eq(parser.next().unwrap(), EventCode::EndTag, Some("aaa"));
+            event_eq(parser.next().unwrap(), EventCode::Eof, None);
         }
     }
 
@@ -1627,6 +1645,7 @@ mod tests {
             event_eq(parser.next().unwrap(), EventCode::StartTag, Some("aaa"));
             event_eq(parser.next().unwrap(), EventCode::Text, Some(&text));
             event_eq(parser.next().unwrap(), EventCode::EndTag, Some("aaa"));
+            event_eq(parser.next().unwrap(), EventCode::Eof, None);
         }
     }
 
@@ -1643,6 +1662,28 @@ mod tests {
             event_eq(parser.next().unwrap(), EventCode::StartTag, Some("aaa"));
             event_eq(parser.next().unwrap(), EventCode::Text, Some("abcdef"));
             event_eq(parser.next().unwrap(), EventCode::EndTag, Some("aaa"));
+            event_eq(parser.next().unwrap(), EventCode::Eof, None);
+        }
+    }
+
+    #[test]
+    fn incomplete_buffers() {
+        let xmls: &[&[u8]] = &[
+            // All of these give an "unexpected eof" error if parsed incomplete
+            b"<abcd>",
+            b"</abcd>",
+            b"<? abcd ?>",
+            b"<!-- abcd -->",
+            b"<![CDATA[abcd]]>",
+        ];
+
+        for xml in xmls {
+            // Take every left-alisubstring
+            for len in 1..(xml.len() - 1) {
+                let xml = &xml[..len];
+                let mut parser = Parser::new(Cursor::new(xml));
+                assert!(parser.next().is_err());
+            }
         }
     }
 
@@ -1696,6 +1737,7 @@ mod tests {
             event_eq(parser.next().unwrap(), EventCode::StartTag, Some("aaa"));
             event_eq(parser.next().unwrap(), EventCode::Text, Some(&output));
             event_eq(parser.next().unwrap(), EventCode::EndTag, Some("aaa"));
+            event_eq(parser.next().unwrap(), EventCode::Eof, None);
         }
     }
 }
