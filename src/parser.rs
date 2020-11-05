@@ -832,7 +832,7 @@ impl<'e, 'state> StateMachine<'e, 'state> {
     }
 
     fn handle_processing_instruction(&mut self, pos: usize, buffer: &[u8]) {
-        self.state.start_position = pos + 2;
+        self.state.start_position = pos + 1;
         self.state.state = State::InProcessingInstruction;
 
         self.continue_processing_instruction(buffer);
