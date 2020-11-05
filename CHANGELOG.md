@@ -1,3 +1,7 @@
+## 0.2.2
+
+ * Fixed few related bugs when the current buffer splits the beginning of processing instruction, comment or cdata.
+
 ## 0.2.1
 
  * Fixed bug when using `TreeDeserializer` to get data from the root element as well as some of its children.
