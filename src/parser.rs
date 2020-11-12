@@ -1,4 +1,72 @@
 //! Contains low-level XML `Parser`.
+//!
+//! For example XML like this:
+//! ```xml
+//! <tag attribute="value"/><another-tag>text</another-tag>
+//! ```
+//!
+//! Will give following events:
+//!
+//! | code            | text          |
+//! |-----------------|---------------|
+//! | StartTag        | "tag"         |
+//! | AttributeName   | "attribute"   |
+//! | AttributeValue  | "value"       |
+//! | EndTagImmediate |               |
+//! | StartTag        | "another-tag" |
+//! | Text            | "text"        |
+//! | EndTag          | "another-tag" |
+//! | Eof             |               |
+
+// The parsing is a pull-based, whenever the user calls `Parser::next()` and we haven't reached EOF
+// in the underlying `Read`er, the next event is acquired. However, the parsing is done in blocks,
+// keeping a buffer of events for next time. When all events are drained, next block is parsed.
+
+// The parsing of a block is done in these steps:
+// * Data are read from the underlying `Read`er into buffer provided by `SliceDeque`
+//   - The parsing code that follows may not always consume complete buffer, it may leave some
+//     remainder (e.g. the beginning of a tag) and require additional data before it can finish
+//     parsing it. So if we used simple `Vec` for buffer, we would have to either shift this
+//     remainder to its start or keep growing it, both are suboptimal. For optimal solution we need
+//     a ring buffer. `SliceDeque` provides us ring-buffer with continuous views, so we can read
+//     from it and write to it as if it was a slice.
+//   - `SliceDeque` also guarantees that the buffer will be aligned to a page, which is good for our
+//     SIMD classifiers.
+//
+// * The characters in the buffer are classified by their meaning to XML. This gives us list of
+//   their codes (see `CH_*` constants) and list of their positions in the buffer. We call them
+//   control characters (is in characters that control XML parsing, not ascii control characters).
+//   - The control characters are:
+//     * &"'?!/<=>
+//     * Whitespaces
+//     * Any character above 0x80 as marker of possible Utf-8
+//     * First character other than the above when following one of the above
+//   - Basic implementation of the classification is done by `classify_fallback`. But whenever
+//     possible a SIMD version of `classify_*` is used instead. The SIMD versions have exactly the
+//     same output as `classify_fallback`, but are lot faster. Read comments inside them to see how
+//     they work.
+//
+//  * A DFA is run using the character codes as input. It emits a list of `InternalEvent`s
+//    and possibly also errors. See `StateMachine::run`.
+//    - Each input character may contain flags that are ORed into flags for next event.
+//    - Each transition between states contains additional flags that control the emitting of
+//      events.
+//    - The DFA doesn't handle all possible XML constructs, just the most common. (This was done in
+//      order to keep the amount of states and input alphabet small for future SIMD implementation
+//      of the state machine.) If some uncommon XML construct or syntax error appears, an exception
+//      handler is invoked. The exception handler will inspect the buffer and either handle the
+//      uncommon XML construct, or reports error and attempts to recover from it, then it returns
+//      control back to the state machine.
+//
+//  * The `Parser::next()` picks the next `InternalEvent`s and converts it into `Event`s.
+//    - The depending on the kind of `Event`, it may hold a slice of the `Parser`'s internal buffer.
+//      (E.g. holding the name of a tag, value of attribute, text from in between tags, ...)
+//    - The `Event` has flags sets by the DFA on whether the slice contains any XML entities and any
+//      possible Utf-8 characters.
+//      * If there are any XML entities, they are lazily decoded in-place in the `Parser`'s internal
+//        buffer when the user asks for the contained string or byte-slice.
+//      * If there are any possible Utf-8 characters, the Utf-8 encoding is lazily validated when
+//        the user asks for the contained string.
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
@@ -33,7 +101,7 @@ const CH_EQUAL: u8           = 0x07;
 const CH_GREATER_THAN: u8    = 0x08;
 
 
-/// Naive mapping of ascii character to our code
+/// Naive mapping of ascii characters to our codes
 fn char_to_code(c: u8) -> u8 {
     match c {
         b'\t' | b'\n' | b'\r' | b' ' => CH_WHITESPACE,
@@ -52,7 +120,7 @@ fn char_to_code(c: u8) -> u8 {
 
 /// Fills the `chars` and `positions` vectors with codes and indexes of control characters.
 ///
-/// If there was anything in the `chars` or `positions` vector, the new values are appended behind.
+/// If there was anything in the `chars` or `positions` vector, the new values are appended to it.
 fn classify_fallback(input: &[u8], chars: &mut Vec<u8>, positions: &mut Vec<usize>) {
     let mut prev = CH_LESS_THAN; // Any that is not CH_OTHER
 
@@ -78,14 +146,33 @@ unsafe fn classify_ssse3(input: &[u8], chars: &mut Vec<u8>, positions: &mut Vec<
     // SIMD classification using two `pshufb` instructions (`_mm_shuffle_epi8` intrinsic) that match
     // the high and low nibble of the byte. Combining that together we get a non-zero value for every
     // of the matched characters.
-
+    //
+    // There are many ways to classify characters using SIMD. This page provides description of
+    // several: http://0x80.pl/articles/simd-byte-lookup.html
+    //
+    // We are using custom algorithm similar to the "Universal" one described on the page linked
+    // above. The key difference is that we not only need to get bytemask/bitmask marking the
+    // characters we are looking for, but also classify them into groups.
+    //
+    // The key to this is the `pshufb` instruction, which uses the bottom 4 bits of each byte in the
+    // SIMD register to index into another SIMD register and writes those to the output register.
+    // We can do this twice, once for the lower 4 bits and second times for the higher 4 bits.
+    //
+    // We can write ASCII table in 16 x 16 table, having the high 4 bits index columns and low 4
+    // bits index the rows. One `pshufb` instruction basically assigns a byte to a column and
+    // another to a row. We can strategically set bits in this byte such that when we AND them
+    // together we will have some bits set only in the characters we care about.
+    //
+    // This in general allows to classify up to 8 groups (8 bits in byte), but we manage to use it
+    // for 9 groups, because one group sits exactly in place where other two groups cross.
+    //
     //     hi / lo
     //                   groups                                      characters
     //         +--------------------------------         +--------------------------------
     //         | 0 1 2 3 4 5 6 7 8 9 a b c d e f         | 0 1 2 3 4 5 6 7 8 9 a b c d e f
-    //       --+--------------------------------       --+--------------------------------
-    //       0 | . . . . . . . . . A A . . A . .       0 | . . . . . . . . . S S . . S . .
-    //       1 | . . . . . . . . . . . . . . . .       1 | . . . . . . . . . . . . . . . .
+    //       --+--------------------------------       --+--------------------------------        legend:
+    //       0 | . . . . . . . . . A A . . A . .       0 | . . . . . . . . . S S . . S . .        S = whitespace
+    //       1 | . . . . . . . . . . . . . . . .       1 | . . . . . . . . . . . . . . . .        U = possible Utf-8 character
     //       2 | B B B . . . C C . . . . . . . D       2 | S ! " . . . & ' . . . . . . . /
     //       3 | . . . . . . . . . . . . E E E F       3 | . . . . . . . . . . . . < = > ?
     //       4 | . . . . . . . . . . . . . . . .       4 | . . . . . . . . . . . . . . . .
@@ -100,6 +187,17 @@ unsafe fn classify_ssse3(input: &[u8], chars: &mut Vec<u8>, positions: &mut Vec<
     //       d | G G G G G G G G G G G G G G G G       d | U U U U U U U U U U U U U U U U
     //       e | G G G G G G G G G G G G G G G G       e | U U U U U U U U U U U U U U U U
     //       f | G G G G G G G G G G G G G G G G       f | U U U U U U U U U U U U U U U U
+    //
+    // After that we perform a serie of byte-wise operations on the SIMD vector of characters, that
+    // put the values for all control characters in 0-15 range. Part of that is XOR of the
+    // character values with the group values. So the bits selected for each group matter!
+    //
+    // Then we extract a bitmask into u64, where each bit represents whether given position in block
+    // of characters contains a control character. We shift this and OR it with itself to also
+    // select every character following a control character.
+    //
+    // Then for every bit that is set we save the control character value and position to the
+    // provided vectors.
 
     // Group constants must be a single bit each, they are carefully selected such that we can later
     // use add their value to the character's ascii code to make the last 4 bits unique.
@@ -112,42 +210,44 @@ unsafe fn classify_ssse3(input: &[u8], chars: &mut Vec<u8>, positions: &mut Vec<
     const GROUP_F: i8 = 0x04;
     const GROUP_G: i8 = 0x08;
 
+    // First we load some constants into registers. These are used repeatedly in the following loop
+    // and should stay in registers until the end.
     let lo_nibbles_lookup = _mm_setr_epi8(
-        /* 0 */ GROUP_G | GROUP_B,
-        /* 1 */ GROUP_G | GROUP_B,
-        /* 2 */ GROUP_G | GROUP_B,
-        /* 3 */ GROUP_G,
-        /* 4 */ GROUP_G,
-        /* 5 */ GROUP_G,
-        /* 6 */ GROUP_G | GROUP_C,
-        /* 7 */ GROUP_G | GROUP_C,
-        /* 8 */ GROUP_G,
-        /* 9 */ GROUP_G | GROUP_A,
-        /* a */ GROUP_G | GROUP_A,
-        /* b */ GROUP_G,
-        /* c */ GROUP_G | GROUP_E,
-        /* d */ GROUP_G | GROUP_A | GROUP_E,
-        /* e */ GROUP_G | GROUP_E,
-        /* f */ GROUP_G | GROUP_D | GROUP_F,
+        /* column 0 */ GROUP_G | GROUP_B,
+        /* column 1 */ GROUP_G | GROUP_B,
+        /* column 2 */ GROUP_G | GROUP_B,
+        /* column 3 */ GROUP_G,
+        /* column 4 */ GROUP_G,
+        /* column 5 */ GROUP_G,
+        /* column 6 */ GROUP_G | GROUP_C,
+        /* column 7 */ GROUP_G | GROUP_C,
+        /* column 8 */ GROUP_G,
+        /* column 9 */ GROUP_G | GROUP_A,
+        /* column a */ GROUP_G | GROUP_A,
+        /* column b */ GROUP_G,
+        /* column c */ GROUP_G | GROUP_E,
+        /* column d */ GROUP_G | GROUP_A | GROUP_E,
+        /* column e */ GROUP_G | GROUP_E,
+        /* column f */ GROUP_G | GROUP_D | GROUP_F,
     );
 
     let hi_nibbles_lookup = _mm_setr_epi8(
-        /* 0 */ GROUP_A,
-        /* 1 */ NOTHING,
-        /* 2 */ GROUP_B | GROUP_C | GROUP_D,
-        /* 3 */ GROUP_E | GROUP_F,
-        /* 4 */ NOTHING,
-        /* 5 */ NOTHING,
-        /* 6 */ NOTHING,
-        /* 7 */ NOTHING,
-        /* 8 */ GROUP_G,
-        /* 9 */ GROUP_G,
-        /* a */ GROUP_G,
-        /* b */ GROUP_G,
-        /* c */ GROUP_G,
-        /* d */ GROUP_G,
-        /* e */ GROUP_G,
-        /* f */ GROUP_G,
+        /* row 0 */ GROUP_A,
+        /* row 1 */ NOTHING,
+        /* row 2 */ GROUP_B | GROUP_C | GROUP_D,
+        /* row 3 */ GROUP_E | GROUP_F,
+        /* row 4 */ NOTHING,
+        /* row 5 */ NOTHING,
+        /* row 6 */ NOTHING,
+        /* row 7 */ NOTHING,
+        /* row 8 */ GROUP_G,
+        /* row 9 */ GROUP_G,
+        /* row a */ GROUP_G,
+        /* row b */ GROUP_G,
+        /* row c */ GROUP_G,
+        /* row d */ GROUP_G,
+        /* row e */ GROUP_G,
+        /* row f */ GROUP_G,
     );
 
     let vec_x00 = _mm_set1_epi8(0x00);
@@ -182,6 +282,8 @@ unsafe fn classify_ssse3(input: &[u8], chars: &mut Vec<u8>, positions: &mut Vec<
 
     let mut offset = 0;
 
+    // This is our piece of memory on stack into which we can do aligned stores and then read back
+    // using non-simd code.
     #[repr(align(64))]
     struct ScratchPad([u8; BLOCK_SIZE]);
     let mut scratchpad = ScratchPad([0; 64]);
@@ -192,12 +294,16 @@ unsafe fn classify_ssse3(input: &[u8], chars: &mut Vec<u8>, positions: &mut Vec<
     // not a big deal, the state machine can handle that.
     let mut prev_mask = 1u64 << 63;
 
+    // Here is the main loop. We iterate in BLOCK_SIZE blocks.
     while ptr < end {
+        // This function handles one SIMD vector within the block. In here we are dealing with sse2,
+        // so SIMD vector is 16 bytes, while BLOCK_SIZE is 64 bytes. So this function will be called
+        // 4 times.
         let load_vec = |ptr: *const u8, out: *mut u8| -> u64 {
             // Load input from memory to SIMD register
             //
             //   Example: input = ['A', '\t', '\n', '\r', ' ', '!', '"', '\'', '/', '<', '=', '>', '?', '\xea', ..]
-            //            input = [41, 09, 0a, 0d, 20, 21, 22, 26, 27, 2f, 3c, 3d, 3e, 3f, ea, ..]
+            //    in hex: input = [41, 09, 0a, 0d, 20, 21, 22, 26, 27, 2f, 3c, 3d, 3e, 3f, ea, ..]
             let input = _mm_load_si128(ptr as *const __m128i); // TODO: Stream load could be good, but it is not available in rust. :-(
 
             // Map characters into groups using two shuffles
@@ -254,6 +360,7 @@ unsafe fn classify_ssse3(input: &[u8], chars: &mut Vec<u8>, positions: &mut Vec<
             (_mm_movemask_epi8(mask) as u16) as u64
         };
 
+        // We load the block as 4x SSE2 vector and combine the bits of the mask into one u64 mask
         let mask_a = load_vec(ptr,         &mut scratchpad.0[0]  as *mut u8);
         let mask_b = load_vec(ptr.add(16), &mut scratchpad.0[16] as *mut u8);
         let mask_c = load_vec(ptr.add(32), &mut scratchpad.0[32] as *mut u8);
@@ -262,7 +369,7 @@ unsafe fn classify_ssse3(input: &[u8], chars: &mut Vec<u8>, positions: &mut Vec<
         let mut mask = !(mask_a | (mask_b << 16) | (mask_c << 32) | (mask_d << 48));
 
         // Shift the mask such that we take one non-control character after each block of control
-        // characters. Remember the mask for next time.
+        // characters. Remember the mask for next iteration.
         let tmp = mask;
         mask = mask | (mask << 1) | (prev_mask >> 63);
         prev_mask = tmp;
@@ -472,13 +579,9 @@ unsafe fn classify_avx2(input: &[u8], chars: &mut Vec<u8>, positions: &mut Vec<u
             let mask = _mm256_cmpeq_epi8(groups, vec_x00);
 
             let input = _mm256_min_epu8(input, vec_x80);
-
             let input = _mm256_or_si256(input, mask);
-
             let input = _mm256_subs_epu8(input, vec_x20);
-
             let input = _mm256_xor_si256(input, groups);
-
             let input = _mm256_shuffle_epi8(compact_lookup, input);
 
             _mm256_store_si256(&mut scratchpad.0[0] as *mut u8 as *mut __m256i, input);
@@ -556,6 +659,8 @@ unsafe fn classify_avx2(input: &[u8], chars: &mut Vec<u8>, positions: &mut Vec<u
 #[multiversion]
 #[specialize(target = "[x86|x86_64]+avx2", fn = "classify_avx2", unsafe = true)]
 #[specialize(target = "[x86|x86_64]+ssse3", fn = "classify_ssse3", unsafe = true)]
+// TODO: AVX512 should be possible, even with some additional improvements using scather instructions,
+//       but AVX512 is only partially implemented in nightly and not at all in stable rust.
 fn classify(input: &[u8], chars: &mut Vec<u8>, positions: &mut Vec<usize>) {
     classify_fallback(input, chars, positions)
 }
@@ -1077,9 +1182,18 @@ struct InternalEvent {
 }
 
 /// Event represents a part of a XML document.
+///
+/// Each event has code (`EventCode`) and may contain a string representing that
+/// part of the XML document.
 #[derive(Debug)]
 pub struct Event<'a> {
+    /// Slice into the buffer inside `Parser`
     slice: &'a mut [u8],
+
+    /// Encodes the `EventCode` and the flags
+    ///
+    /// The reason for putting them together is not to save memory (there is padding after this
+    /// anyway), but it comes like this directly from the `StateMachine`.
     code: u8,
 }
 
