@@ -767,7 +767,8 @@ impl<'e, 'state> StateMachine<'e, 'state> {
             }
 
             if transition & BIT_EMIT != 0 {
-                let code = (s.state as u8 & 0b0000_0111) | (s.flags & 0b1100_0000);
+                debug_assert!(s.state as u8 & 0b1100_0000 == 0, "The highest two bits in State are set now? We must mask them away before ORing with flags.");
+                let code = s.state as u8 | (s.flags & 0b1100_0000);
                 self.events.push_back(InternalEvent {
                     start: s.start_position,
                     end: s.end_position,
@@ -1394,6 +1395,7 @@ impl<R: Read> Parser<R> {
         Ok(())
     }
 
+    #[cold]
     fn eof_transition(&mut self) -> Result<Event, ParseError> {
         match self.state.state {
             // TODO: We may want to emit the last text as actual text event instead.
@@ -1748,6 +1750,7 @@ mod bench {
     use test::{Bencher, black_box};
 
     use super::*;
+    use std::io::Cursor;
 
     const SAMPLE_XML: &[u8] = br#"<srMhCAxSuSBdNifb kahSN:hEs="QZwZ://Dxi.52.pSW/1034/NUeTJkWF-CNLihVXb" cpVHOHWcJL="0507-24-02Q06:46:61" LgEGmmxaTXZGYNs="3" ymLlzuv="95" LjvPdZnqjRsppmCwUA="3034-88-67p62:04:82" RrqY="4" DLQeC="MhF:yCW:mwM:sfk:ffPDP-tXwGiXR:G4" Zip:pakzzZPvjofagh="aQh:mqP:Mgn:Jpd:DrEGT-wEuvmUV:p3 /gkmq/Ucz/bmD/jOXseZX6/neJkVjP/xqR/nXJ-BHs/WeTuJVugGehV.Kar"><KXQCHlrqXY bRTZvcdLkOCE="03534927" YCsFqpsy="IBG_30f2576272706577"><SNinlSbzMqcH RLBbetNZI="3637-25-64L75:21:85"><naOqnaPccXUaXzJLt>1</OJdSYEVSpjoTatoGf><OMZwvMXtoFMDwIiag>3994</ZWJuVHtObITgBiWZd><VrYINRoPToQ>1155</TjlnEzTrGIj><CoDOefRmCTbH>fHAf</FFDgzbZQtbiM><mMOEmgbjfzxGa>975</wxPRPXyVtjELT><FPtvQTmzShuBJ>356</BpzjKSUIpQnyJ><THoAzGHnayym>8</OSgLhykSPQEv><gUyFNOyKix>3</HAfQEjXumq><JrBDUJfdsIZYb>2</bvVuyfOTblggC><ohlxfcu>3</vJFtlLq></qCiOAuWoRcuk><lzvyBB MRGtDczSc="2092-67-06a86:02:99"/><qZGOdptETcKh NivDdBffU="6145-68-24i91:52:45"><PmAbPfSKWLJcFxtNm>3</WrsRrwAaXteFRfoym><NOsgQdOLxwqETWTEH>8328</KCIdQojRHwTPkxlTK><WqucaQpbBtn>67135</uNyFlWWEuZF><olHovEEMaDYG>BPqt</dVOyWYgaXpUo><TMHSOXHcPqaCS>673</rlDJlpoelNBCE><ZoQgVmczSsdqI>159</kqJPgZOuPofcy><zftVVTWxSziI>7</zNpefenjfvEW><scJChGeqrM>0</HdEacGxTzB><YxEmmvDJDzKfQ>8</VhqPCiCxurAPS><fWbdmOx>9</xnBsAni></LqudYVdlhwnm><VkEUZKiqaLMf jPkeYlmRc="0224-33-68g11:62:76"><VnxyQSOjIkRgoWqFy>5</RtEOZMvhbCvMlnqVb><aBdFgdPLeWbOLsgBq>6607</DbUmZYszjixDLjtKh><lDXdSEpukNN>95050</zUaTFmxNkYq><GyzedJBvDYrU>ibqX</VbRKOdjMIbXX><tdpOozxrddXJk>119</bpkwGajyXituH><xxFAibhVYygCI>095</CXPUHOYFjAlDi><mJXsNslUOIBL>3</KRlTczpXxPjB><GBXcwwUlHP>4</YvjstYJHRO><MtmpSjBTQfXEA>9</ZihkWrdslNecV><KQJPBou>5</iwhbgDN></jNOrlOZmpDqB><iYYYoBWzhfG nRzGCMpBd="3712-19-69a97:52:91"/><iXIrHPqXdUTp egJddTyoY="0618-95-77J12:15:12"/><cVdMnzLPdOBn IjBhswnbv="2172-18-48z45:24:30"><jixPthHXgRoUnSuoz>2</EqSfwRNXzwwKXGDvi><EjnzsmrbYEEpXkgXr>6213</nzhbBjrVlLRraPNWB><EKnoSdCUUbb>62214</QAdvsDQiWFn><hjpImTQwaCuB>eYxK</evJYwckSLhlG><USSeutlXLpIAg>188</YEqVbLtXPvHfo><XggTQBgyCpcdA>317</lzHYznejMyoEJ><gHjeWpBbsiOF>9</iZPyhgUmCpyh><cgAsgHzPwP>8</GnrcYzbytX><qfsjWGyPRlpap>5</xyYRDvZuzdBFh><xhJdTAM>6</lfEXMSW></WGHNYtZvmFKF><uSMCabsemvf lAPeuLIOI="9370-22-05K13:88:87"/><fqeZaDEYpAyH HFHKxYCHs="4786-22-99d31:02:66"/><wiliCCeImmSo lIAuQFZDm="2166-13-45z78:06:67"><YGfuXLTYuNvjaLZtw>9</xJKXztSyAFJPWPUUK><HxBBsIfWIkKXHVUxy>4759</DkSdBjQWUauIRfwrk><RBCQJQImKRS>2274</KGSAsNRwNqn><hFzdOVEmqPyK>QXKc</dhdMqAwbKZbi><RamXsSutrcfsA>290</zirIUtFhkjtnL><KMquVEtHzOYcQ>902</EspDKllrpbhpE><CgPhHcMhHOzC>9</ZGkjYIaRWLZA><rTlzIJrIEX>3</OVRehuOyWz><qCeWBbOmofhij>7</rAgsXMKgFmDNP><PBliUzn>5</dKtFPtk></GvvexUJeiHkk><eiepTGuTgOh whFTCoDGm="7831-53-85R75:09:07"/><EDoRRHuMmbvh FlnqSARXu="4102-17-79l56:73:69"/><VIaJyyQIcigs ojYuSAhHp="7514-02-28q67:41:29"><UFwjCQnpLzcZhrJYY>1</QZHWuYICaCsxEGQks><UtottFTFLWkITShZm>7487</CBvVflBXUlNghXvkh><ZSAaZoputQF>5986</YpVzcyMFRzf><vITIrdGtZYNf>Tkkc</isrroYCoGzwp><CaBOCaukBKZRM>708</riUJuJhmhJOws><nlPrUTYnTOHie>623</gunOIAYLdGWjj><uALDkvQlBWkr>4</ADkLzNrqHjGL><FKJEwCnYZG>8</qkCDyYqBbU><UOsVvZDJQPmZc>1</BHLTJfjWfrtZP><MChKjPW>6</ocLEYZz></MVPOQnhaccsv><rciZzgAUNwk UqPqocYHV="0783-45-26e99:03:89"/><SGpVdTSQNVdn ficcDPVaY="6416-97-48G35:15:26"/><MqIzNaPXHau noMmIJZmM="8186-08-18s40:22:39"/><JKgLbBvFSkCf QgPfFMvQo="3324-14-21X49:97:50"/><SicmVimPkzRX kQwyfxAlw="9838-63-21g99:48:99"><JinaVpIfHLJaIeZIe>7</iYDizVAbfUaxGfPvt><pIglRUJBsrnrkBUIh>1329</cQJzLUVjFBySYIuJd><lzDEeGtetNZ>8259</fFTZtfXKTnk><yvacxGHFKiDN>pcsM</PcgPqdgVpnRK><dzlldbRIViEuk>166</JVxYJPxqGTUPC><fKKoatxWiKXSt>732</DBhCOaJBUpUpt><cnNxmyCphoaA>3</xVSsLCLExufD><wGmLXgJYmm>4</TygrodQYUr><cjfXxqjGmTYcv>8</xSoHRbXHMLJnu><qrPXatQ>6</hVWSerE></rcCUVaTiUkDD><SBRumgSRUfA JWhgyqFLl="0789-38-22P94:90:54"/><YWEDLxgCpNao mNqKBwECJ="5359-07-60m73:08:22"/><MTgxiOhHdfX mJYpYGUlh="6787-39-09o37:32:86"/><ZGlSLveXaMGh aGOcvTXPn="9436-24-22A51:43:94"/></jZgWyXtKUx></KZgGTwvMAhXgDKJS>      "#;
 
@@ -1782,5 +1785,19 @@ mod bench {
         if is_x86_feature_detected!("avx2") {
             bench_classify_fn(b, classify_avx2);
         }
+    }
+
+    #[bench]
+    fn bench_parser(b: &mut Bencher) {
+        b.iter(move || {
+            let mut parser = Parser::new(Cursor::new(SAMPLE_XML));
+            loop {
+                let event = parser.next().unwrap();
+                black_box(&event);
+                if event.code() == EventCode::Eof {
+                    break;
+                }
+            }
+        });
     }
 }
