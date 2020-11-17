@@ -28,9 +28,9 @@ dependencies = [
 
 [[package]]
 name = "inlinable_string"
-version = "0.1.11"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb6ee2a7da03bfc3b66ca47c92c2e392fcc053ea040a85561749b026f7aad09a"
+checksum = "dd0ede27dc0fc23c80f0b37c2c15bb2aea97b1070bd0f54155bf586c8db6dee5"
 
 [[package]]
 name = "libc"
@@ -106,9 +106,9 @@ dependencies = [
 
 [[package]]
 name = "paste"
-version = "1.0.2"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba7ae1a2180ed02ddfdb5ab70c70d596a26dd642e097bb6fe78b1bde8588ed97"
+checksum = "7151b083b0664ed58ed669fcdd92f01c3d2fdbf10af4931a301474950b52bfa9"
 
 [[package]]
 name = "proc-macro-crate"
@@ -139,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "rapid-xml"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "btoi",
  "inlinable_string",

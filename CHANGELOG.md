@@ -1,3 +1,7 @@
+## 0.2.3
+
+ * Performance improvements in parser and tree deserializer.
+
 ## 0.2.2
 
  * Fixed few related bugs when the current buffer splits the beginning of processing instruction, comment or cdata.
