@@ -1,6 +1,7 @@
 //! Contains XML tree serde Deserializer build on top of `Parser` from `parse` and `Deserializer`
 //! from `de`.
 
+use std::fmt;
 use std::io::Read;
 use std::marker::PhantomData;
 
@@ -98,7 +99,9 @@ impl TagMatcher for AnyTagMatch {
 #[derive(Debug)]
 pub struct ElementEnter<M, N> {
     tag_matcher: M,
-    next: N,
+
+    /// Next part of the path.
+    pub next: N,
 
     entered: bool,
 }
@@ -141,12 +144,29 @@ impl<N> ElementEnter<AnyTagMatch, N> {
 /// may be returned multiple times if there are multiple contained elements.
 ///
 /// You may want to use the `xml_path!` macro rather than constructing path manually.
-#[derive(Debug)]
 pub struct ElementEnterDeserialize<T, M, N> {
     tag_matcher: M,
-    next: N,
+
+    /// Next part of the path.
+    pub next: N,
+
+    trace: Option<Box<dyn FnMut(&T)>>,
 
     entered: Option<T>,
+}
+
+impl<T, M, N> fmt::Debug for ElementEnterDeserialize<T, M, N>
+    where T: fmt::Debug,
+          M: fmt::Debug,
+          N: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("ElementEnterDeserialize")
+            .field("tag_matcher", &self.tag_matcher)
+            .field("next", &self.next)
+            .field("entered", &self.entered)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<T, M: Default, N: Default> Default for ElementEnterDeserialize<T, M, N> {
@@ -154,6 +174,7 @@ impl<T, M: Default, N: Default> Default for ElementEnterDeserialize<T, M, N> {
         Self {
             tag_matcher: M::default(),
             next: N::default(),
+            trace: None,
             entered: None,
         }
     }
@@ -162,7 +183,12 @@ impl<T, M: Default, N: Default> Default for ElementEnterDeserialize<T, M, N> {
 impl<T, M, N> ElementEnterDeserialize<T, M, N> {
     /// Create `ElementEnterDeserialize` matching tag using given matcher
     pub fn new(tag_matcher: M, next: N) -> Self {
-        Self { tag_matcher, next, entered: None }
+        Self { tag_matcher, next, trace: None, entered: None }
+    }
+
+    /// Set the trace callback to be called each time the start tag is successfully parsed.
+    pub fn set_trace(&mut self, f: impl FnMut(&T) + 'static) {
+        self.trace = Some(Box::new(f) as Box<_>);
     }
 }
 
@@ -299,18 +325,16 @@ impl<T: DeserializeOwned + Clone, M: TagMatcher, N: XmlPath> XmlPath for Element
                     if self.tag_matcher.matches(&tag_name) {
                         let opening_tag = tag_name.into();
                         let mut des = Deserializer::new_inside_tag(parser, opening_tag, true);
-                        match T::deserialize(&mut des) {
-                            Ok(value) => {
-                                self.entered = Some(value);
-                            }
-                            Err(DeserializeError::UnexpectedEndTag) => {
-                                // This is fine, we deserialized the `T` successfully but then there
-                                // are no child tags to enter, so we continue to next sibling tag or
-                                // end of this container.
-                            }
-                            Err(err) => {
-                                return Some(Err(err));
-                            }
+                        self.entered = Some(try_some!(T::deserialize(&mut des)));
+                        if let Some(f) = self.trace.as_mut() {
+                            f(self.entered.as_ref().unwrap());
+                        }
+                        if let EventCode::EndTag | EventCode::EndTagImmediate = try_some!(parser.peek()).code() {
+                            // This is fine, we deserialized the `T` successfully but then there
+                            // are no child tags to enter, so we continue to next sibling tag or
+                            // end of this container.
+                            let _ = parser.next().unwrap();
+                            self.entered = None;
                         }
                     } else {
                         try_some!(parser.finish_tag(1));

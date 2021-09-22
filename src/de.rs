@@ -308,15 +308,10 @@ impl<'de: 'a, 'a, R: Read> serde::Deserializer<'de> for &'a mut Deserializer<'a,
                             out
                         }
                         EventCode::EndTag | EventCode::EndTagImmediate => {
-                            let _ = self.parser.next(); // Consume the event (we know there is no error, if there was, we would get it in peek)
-                            if self.only_attributes {
-                                // This is mostly important for `EndTagImmediate`, we need to inform
-                                // `ElementEnterDeserialize` that while we did deserialize the tag,
-                                // it has nowhere to enter!
-                                Err(DeserializeError::UnexpectedEndTag)
-                            } else {
-                                Ok(None)
+                            if !self.only_attributes {
+                                let _ = self.parser.next(); // Consume the event (we know there is no error, if there was, we would get it in peek)
                             }
+                            Ok(None)
                         },
                         _ => {
                             if self.only_attributes {
