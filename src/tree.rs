@@ -824,6 +824,35 @@ mod tests {
         assert_eq!(des.next().unwrap().unwrap(), (Root { xyz: 42, }, Ccc { m: 400 }));
         assert!(des.next().is_none());
     }
+
+    #[test]
+    fn callbacks() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let mut path = xml_path!("root", "aaa", "bbb" => Bbb, "ccc" => Ccc);
+
+        let state = Rc::new(RefCell::new(Vec::new()));
+
+        path.next.next.set_trace({
+            let s = Rc::clone(&state);
+            move |&Bbb { n }| {
+                s.borrow_mut().push(n);
+            }
+        });
+
+        let des = TreeDeserializer::from_path_and_reader(path, Cursor::new(&SAMPLE_XML[..]));
+        for _ in des {
+            // we're only interested in the callbacks
+        }
+
+        let mut it = Rc::try_unwrap(state).unwrap().into_inner().into_iter();
+        assert_eq!(it.next(), Some(1));
+        assert_eq!(it.next(), Some(99)); // These would not be seen in the output,
+        assert_eq!(it.next(), Some(99)); // as they have no ccc children.
+        assert_eq!(it.next(), Some(2));
+        assert_eq!(it.next(), None);
+    }
 }
 
 #[cfg(test)]
