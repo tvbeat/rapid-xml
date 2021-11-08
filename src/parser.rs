@@ -888,10 +888,7 @@ impl<'e, 'state> StateMachine<'e, 'state> {
 
             s.state = match transition & 0b0001_1111 {
                 #[cfg(debug_assertions)]
-                state_num => {
-                    use std::convert::TryFrom;
-                    State::try_from(state_num).unwrap()
-                },
+                state_num => State::try_from(state_num).unwrap(),
 
                 #[cfg(not(debug_assertions))]
                 state_num => unsafe { std::mem::transmute::<u8, State>(state_num) },

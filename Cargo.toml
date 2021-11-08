@@ -2,7 +2,7 @@
 name = "rapid-xml"
 version = "0.2.3"
 authors = ["Michal Srb <michalsrb@gmail.com>"]
-edition = "2018"
+edition = "2021"
 license = "MIT"
 description = "XML parser with focus on speed and deserialization to serde"
 homepage = "https://github.com/tvbeat/rapid-xml"
