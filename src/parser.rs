@@ -385,7 +385,7 @@ unsafe fn classify_ssse3(input: &[u8], chars: &mut Vec<u8>, positions: &mut Vec<
             let mut positions_ptr = positions.as_mut_ptr().add(positions.len());
 
             // Write them out.
-            loop {
+            'outer: loop {
                 // To reduce the amount of conditional jumps, we always write out the next 4
                 // characters, even if there is less than 4 characters left. In that case, some of
                 // them are incorrect, but they will be ignored because at the end we set the length
@@ -405,10 +405,9 @@ unsafe fn classify_ssse3(input: &[u8], chars: &mut Vec<u8>, positions: &mut Vec<
                     positions_ptr = positions_ptr.add(1);
 
                     mask = mask & mask.overflowing_sub(1).0;
-                }
-
-                if mask == 0 {
-                    break;
+                    if mask == 0 {
+                        break 'outer;
+                    }
                 }
             }
 
@@ -625,7 +624,7 @@ unsafe fn classify_avx2(input: &[u8], chars: &mut Vec<u8>, positions: &mut Vec<u
             let mut chars_ptr = chars.as_mut_ptr().add(chars.len());
             let mut positions_ptr = positions.as_mut_ptr().add(positions.len());
 
-            loop {
+            'outer: loop {
                 // TODO: Verify that this is unrolled
                 // TODO: Fine-tune the amount of repetitions
                 for _ in 0..4 {
@@ -640,10 +639,9 @@ unsafe fn classify_avx2(input: &[u8], chars: &mut Vec<u8>, positions: &mut Vec<u
                     positions_ptr = positions_ptr.add(1);
 
                     mask = mask & mask.overflowing_sub(1).0;
-                }
-
-                if mask == 0 {
-                    break;
+                    if mask == 0 {
+                        break 'outer;
+                    }
                 }
             }
 
