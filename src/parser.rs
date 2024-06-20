@@ -404,7 +404,7 @@ unsafe fn classify_ssse3(input: &[u8], chars: &mut Vec<u8>, positions: &mut Vec<
                     *positions_ptr = pos;
                     positions_ptr = positions_ptr.add(1);
 
-                    mask = mask & mask.overflowing_sub(1).0;
+                    mask = mask & mask.wrapping_sub(1);
                     if mask == 0 {
                         break 'outer;
                     }
@@ -638,7 +638,7 @@ unsafe fn classify_avx2(input: &[u8], chars: &mut Vec<u8>, positions: &mut Vec<u
                     *positions_ptr = pos;
                     positions_ptr = positions_ptr.add(1);
 
-                    mask = mask & mask.overflowing_sub(1).0;
+                    mask = mask & mask.wrapping_sub(1);
                     if mask == 0 {
                         break 'outer;
                     }
